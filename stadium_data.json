@@ -1,0 +1,19 @@
+{
+  "stadium_name": "Antigravity Arena",
+  "gates": [
+    {
+      "id": "Gate A (North)",
+      "coords": {"lat": 40.7580, "lng": -73.9855},
+      "current_wait_min": 25
+    },
+    {
+      "id": "Gate B (South)",
+      "coords": {"lat": 40.7585, "lng": -73.9840},
+      "current_wait_min": 5
+    }
+  ],
+  "concessions": [
+    {"name": "Victory Burgers", "wait_time": 12},
+    {"name": "Quick-Sip Drinks", "wait_time": 2}
+  ]
+}

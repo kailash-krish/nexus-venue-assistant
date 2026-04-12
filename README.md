@@ -14,3 +14,9 @@ The Nexus-Venue Assistant optimizes the attendee experience by using a **Weighte
 ## 💡 Assumptions
 - Attendees have a mobile device with GPS enabled.
 - The stadium provides a data feed of gate wait times (simulated via JSON).
+
+## 🧪 How to Test & Validate
+To see the dynamic logic in action:
+1. Run the simulator: `python simulator.py`
+2. In a separate terminal, run the assistant: `python assistant.py`
+3. Observe how the AI's recommendations change as the 'Gate B' or 'Concession' wait times fluctuate in real-time.

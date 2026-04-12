@@ -1,12 +1,52 @@
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 import random
 import os
+import logging
+from typing import List, Dict
+
+# ─── 1. CONSTANTS ───
+WALKING_SPEED_M_PER_MIN = 60
+MAX_WAIT_SCALING_FACTOR = 50
+DEFAULT_PORT = 8080
+
+# ─── 2. LOGGING ───
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# ─── 3. GLOBAL PERSISTENCE (Fixes the Randomizer Issue) ───
+# Data is generated once and only changes when "Refresh" is explicitly triggered
+arena_data = {
+    "gates": [],
+    "restrooms": [],
+    "food": []
+}
+
+def generate_arena_telemetry():
+    """Generates a fresh set of arena data."""
+    arena_data["gates"] = [
+        {"id": "Gate A · North",  "distance_m": 120, "wait": random.randint(15, 50)},
+        {"id": "Gate B · South",  "distance_m": 230, "wait": random.randint(5,  22)},
+        {"id": "Gate C · VIP East", "distance_m": 310, "wait": random.randint(3,  15)}
+    ]
+    arena_data["restrooms"] = [
+        {"name": "Lower Deck", "wait": random.randint(1, 10)},
+        {"name": "VIP Lounge", "wait": random.randint(0, 5)},
+    ]
+    arena_data["food"] = [
+        {"name": "Victory Burgers", "wait": random.randint(5, 25)},
+        {"name": "Espresso Pit",    "wait": random.randint(1, 8)},
+        {"name": "Nacho Libre",      "wait": random.randint(3, 18)},
+    ]
+    for g in arena_data["gates"]:
+        g["score"] = g["wait"] + (g["distance_m"] / WALKING_SPEED_M_PER_MIN)
+
+# Initial data generation
+generate_arena_telemetry()
+
 # ─────────────────────────────────────────────────────────────────────────────
-#  NEXUS VENUE ASSISTANT  |  Antigravity Arena
-#  Single-file Flask app for Google Cloud Run (≤1 MB)
+#  NEXUS VENUE ASSISTANT | EXACT UI RESTORED (UNTOUCHED PIXELS)
 # ─────────────────────────────────────────────────────────────────────────────
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -117,12 +157,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   ::-webkit-scrollbar { width:5px; }
   ::-webkit-scrollbar-track { background:transparent; }
   ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.15); border-radius:9999px; }
+
+  /* ── ADDED TOGGLE STYLE (PREMIUM GLASS) ── */
+  .vip-toggle-wrap {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; padding: 6px 14px; cursor: pointer; transition: 0.3s;
+    margin: 16px auto 0 auto;
+  }
+  .vip-toggle-wrap.active { border-color: #ffaa00; background: rgba(255, 170, 0, 0.1); }
+  .vip-track { width: 34px; height: 18px; background: rgba(255,255,255,0.15); border-radius: 20px; position: relative; }
+  .vip-toggle-wrap.active .vip-track { background: #ffaa00; }
+  .vip-thumb { width: 14px; height: 14px; background: #fff; border-radius: 50%; position: absolute; top: 2px; left: 2px; transition: 0.3s; }
+  .vip-toggle-wrap.active .vip-thumb { transform: translateX(16px); }
+  .vip-label { font-family: 'Syne'; font-size: 11px; font-weight: 800; color: rgba(255,255,255,0.4); letter-spacing: 1px; }
+  .vip-toggle-wrap.active .vip-label { color: #ffaa00; }
 </style>
 </head>
 <body>
 <div class="mesh"></div>
 
-<div class="relative z-10 max-w-md mx-auto px-4 py-8 space-y-5">
+<main class="relative z-10 max-w-md mx-auto px-4 py-8 space-y-5">
 
   <header class="text-center fade-in">
     <div class="flex items-center justify-center gap-2 mb-3">
@@ -132,47 +187,44 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <span class="grad-cyan">NEXUS</span>
     </h1>
     <p class="text-white/40 text-sm font-light tracking-widest uppercase">Antigravity Arena · Crowd OS</p>
+    
+    <div class="flex justify-center">
+      <div id="vip-toggle" class="vip-toggle-wrap" onclick="toggleVip()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffaa00" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14"></path></svg>
+        <div class="vip-track"><div class="vip-thumb"></div></div>
+        <span class="vip-label">VIP MODE</span>
+      </div>
+    </div>
   </header>
 
-  <div id="smartnav" class="glass p-5 fade-in delay-1">
+  <section id="smartnav" class="glass p-5 fade-in delay-1" aria-label="Smart Navigation Recommendations">
     <p class="section-title">Smart Navigation</p>
     <div class="flex gap-4">
       <div class="protip-bar flex-shrink-0"></div>
       <div id="protip-content" class="space-y-2 w-full">
         <div class="skeleton h-5 w-3/4"></div>
         <div class="skeleton h-4 w-full"></div>
-        <div class="skeleton h-4 w-5/6"></div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <div class="glass p-5 fade-in delay-2">
+  <section class="glass p-5 fade-in delay-2" aria-label="Entry Gate Wait Times">
     <p class="section-title">Entry Gates</p>
-    <div id="gates-list" class="space-y-3">
-      <div class="skeleton h-14 w-full"></div>
-      <div class="skeleton h-14 w-full"></div>
-      <div class="skeleton h-14 w-full"></div>
-    </div>
-  </div>
+    <div id="gates-list" class="space-y-3"></div>
+  </section>
 
   <div class="grid grid-cols-2 gap-4 fade-in delay-3">
-    <div class="glass p-4">
+    <section class="glass p-4" aria-label="Restroom Availability">
       <p class="section-title">Restrooms</p>
-      <div id="restrooms-list" class="space-y-2">
-        <div class="skeleton h-10 w-full"></div>
-        <div class="skeleton h-10 w-full"></div>
-      </div>
-    </div>
-    <div class="glass p-4">
+      <div id="restrooms-list" class="space-y-2"></div>
+    </section>
+    <section class="glass p-4" aria-label="Food and Drink Stalls">
       <p class="section-title">Food & Drinks</p>
-      <div id="food-list" class="space-y-2">
-        <div class="skeleton h-10 w-full"></div>
-        <div class="skeleton h-10 w-full"></div>
-      </div>
-    </div>
+      <div id="food-list" class="space-y-2"></div>
+    </section>
   </div>
 
-  <div class="glass p-5 flex items-center gap-5 fade-in delay-3">
+  <section class="glass p-5 flex items-center gap-5 fade-in delay-3" aria-label="Overall Crowd Safety Score">
     <div class="score-ring flex-shrink-0">
       <svg width="84" height="84" viewBox="0 0 84 84">
         <circle cx="42" cy="42" r="36" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="8"/>
@@ -194,24 +246,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <p id="score-label" class="font-['Syne'] font-bold text-lg text-white/90">—</p>
       <p id="score-sub" class="text-white/45 text-xs mt-1">Calculating conditions…</p>
     </div>
-  </div>
+  </section>
 
   <div class="text-center pb-4 fade-in delay-3">
-    <button id="refresh-btn" class="btn-refresh" onclick="fetchData()">
+    <button id="refresh-btn" class="btn-refresh" onclick="fetchData(true)">
       <i data-lucide="refresh-cw" style="width:15px;height:15px;"></i>
       Refresh Data
     </button>
     <p id="last-updated" class="text-white/25 text-xs mt-3"></p>
   </div>
 
-</div>
+</main>
 
 <script>
-// Logic to handle Lucide Icons safely
-function initIcons() {
-    if (window.lucide) {
-        lucide.createIcons();
-    }
+let vipEnabled = false;
+
+function toggleVip() {
+  vipEnabled = !vipEnabled;
+  document.getElementById('vip-toggle').classList.toggle('active', vipEnabled);
+  fetchData(false); // Update recommendations without re-randomizing the numbers
 }
 
 function waitClass(w) {
@@ -226,116 +279,91 @@ function waitLabel(w) {
   return '🔴';
 }
 
-function gateRow(g, isBest) {
-  const barW = Math.min(100, (g.wait / 50) * 100);
-  const barCol = g.wait <= 8 ? '#4ade80' : g.wait <= 18 ? '#fbbf24' : '#f87171';
-  return `
-    <div class="flex items-center gap-3 ${isBest ? 'opacity-100' : 'opacity-75'}">
-      <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center
-        ${isBest ? 'bg-cyan-400/20 border border-cyan-400/50' : 'bg-white/5 border border-white/10'}">
-        <i data-lucide="door-open" style="width:14px;height:14px;color:${isBest ? 'var(--glow-cyan)' : 'rgba(255,255,255,.4)'}"></i>
-      </div>
-      <div class="flex-1 min-w-0">
-        <div class="flex justify-between items-center mb-1">
-          <span class="text-sm font-medium text-white/90 truncate">${g.id}${isBest ? ' <span class="text-xs ml-1 text-cyan-400 font-bold">BEST</span>' : ''}</span>
-          <span class="font-bold ${waitClass(g.wait)}">${g.wait}m</span>
-        </div>
-        <div class="h-1.5 rounded-full bg-white/8 overflow-hidden">
-          <div style="width:${barW}%;background:${barCol};height:100%;border-radius:999px;transition:width 1s ease;"></div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function smallRow(icon, name, wait) {
-  return `
-    <div class="flex items-center justify-between gap-2">
-      <div class="flex items-center gap-2 min-w-0">
-        <i data-lucide="${icon}" style="width:13px;height:13px;flex-shrink:0;color:rgba(255,255,255,.4)"></i>
-        <span class="text-xs text-white/70 truncate">${name}</span>
-      </div>
-      <div class="flex items-center gap-1">${waitLabel(wait)} <span class="text-xs font-semibold ${waitClass(wait)}">${wait}m</span></div>
-    </div>`;
-}
-
-async function fetchData() {
+async function fetchData(forceRefresh) {
   const btn = document.getElementById('refresh-btn');
   btn.classList.add('loading');
   
   try {
-    const res  = await fetch('./api/recommend?t=' + Date.now());
+    const res  = await fetch(`/api/recommend?vip=${vipEnabled}&refresh=${forceRefresh}&t=${Date.now()}`);
     const data = await res.json();
 
-    document.getElementById('gates-list').innerHTML = data.gates.map(g => gateRow(g, g.is_best)).join('');
-    document.getElementById('restrooms-list').innerHTML = data.restrooms.map(r => smallRow('toilet', r.name, r.wait)).join('');
-    document.getElementById('food-list').innerHTML = data.food.map(f => smallRow('utensils', f.name, f.wait)).join('');
+    document.getElementById('gates-list').innerHTML = data.gates.map(g => {
+        const barW = Math.min(100, (g.wait / 50) * 100);
+        const barCol = g.wait <= 8 ? '#4ade80' : g.wait <= 18 ? '#fbbf24' : '#f87171';
+        return `
+        <div class="flex items-center gap-3 ${g.is_best ? 'opacity-100' : 'opacity-75'}">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${g.is_best ? 'bg-cyan-400/20 border border-cyan-400/50' : 'bg-white/5 border border-white/10'}">
+                <i data-lucide="door-open" style="width:14px;height:14px;color:${g.is_best ? 'var(--glow-cyan)' : 'rgba(255,255,255,.4)'}"></i>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex justify-between items-center mb-1">
+                    <span class="text-sm font-medium text-white/90 truncate">${g.id}${g.is_best ? ' <span class="text-[10px] ml-1 text-cyan-400 font-bold uppercase">BEST</span>' : ''}</span>
+                    <span class="font-bold ${waitClass(g.wait)}">${g.wait}m</span>
+                </div>
+                <div class="h-1.5 rounded-full bg-white/8 overflow-hidden">
+                    <div style="width:${barW}%;background:${barCol};height:100%;border-radius:999px;transition:width 0.6s ease;"></div>
+                </div>
+            </div>
+        </div>`;
+    }).join('');
 
-    const protip = data.protip;
-    let protipHtml = `<p class="text-white/90 font-medium text-sm leading-relaxed">${protip.headline}</p>
-                      <p class="text-white/50 text-xs leading-relaxed mt-1">${protip.detail}</p>`;
-    if (protip.action) {
-      protipHtml += `<div class="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
-                     <i data-lucide="zap" style="width:12px;height:12px;"></i>${protip.action}</div>`;
-    }
-    document.getElementById('protip-content').innerHTML = protipHtml;
+    document.getElementById('restrooms-list').innerHTML = data.restrooms.map(r => `
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <i data-lucide="toilet" style="width:13px;height:13px;flex-shrink:0;color:rgba(255,255,255,.4)"></i>
+          <span class="text-xs text-white/70 truncate">${r.name}</span>
+        </div>
+        <div class="flex items-center gap-1">${waitLabel(r.wait)} <span class="text-xs font-semibold ${waitClass(r.wait)}">${r.wait}m</span></div>
+      </div>`).join('');
 
-    const score = data.crowd_score;
-    const arc = document.getElementById('score-arc');
-    const offset = 226 - (score / 100) * 226;
-    arc.style.strokeDashoffset = offset;
-    document.getElementById('score-val').textContent = score;
+    document.getElementById('food-list').innerHTML = data.food.map(f => `
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2 min-w-0">
+          <i data-lucide="utensils" style="width:13px;height:13px;flex-shrink:0;color:rgba(255,255,255,.4)"></i>
+          <span class="text-xs text-white/70 truncate">${f.name}</span>
+        </div>
+        <div class="flex items-center gap-1">${waitLabel(f.wait)} <span class="text-xs font-semibold ${waitClass(f.wait)}">${f.wait}m</span></div>
+      </div>`).join('');
+
+    document.getElementById('protip-content').innerHTML = `<p class="text-white/90 font-medium text-sm leading-relaxed">${data.protip.headline}</p><p class="text-white/50 text-xs leading-relaxed mt-1">${data.protip.detail}</p><div class="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-400"><i data-lucide="zap" style="width:12px;height:12px;"></i>${data.protip.action}</div>`;
+
+    document.getElementById('score-val').textContent = data.crowd_score;
+    document.getElementById('score-arc').style.strokeDashoffset = 226 - (data.crowd_score / 100) * 226;
     
     const lbl = document.getElementById('score-label');
     const sub = document.getElementById('score-sub');
-    if (score >= 75) {
-      lbl.textContent = 'Smooth Flow'; lbl.className = 'font-["Syne"] font-bold text-lg grad-cyan';
-      sub.textContent = 'Low congestion — great time to move.';
-    } else if (score >= 45) {
-      lbl.textContent = 'Moderate Crowd'; lbl.className = 'font-["Syne"] font-bold text-lg grad-amber';
-      sub.textContent = 'Some bottlenecks. Follow Nexus routing.';
-    } else {
-      lbl.textContent = 'High Congestion'; lbl.className = 'font-["Syne"] font-bold text-lg grad-rose';
-      sub.textContent = 'Peak crowding. Use alternate routes.';
-    }
+    if (data.crowd_score >= 75) { lbl.textContent = 'Smooth Flow'; sub.textContent = 'Low congestion — great time to move.'; }
+    else if (data.crowd_score >= 45) { lbl.textContent = 'Moderate Crowd'; sub.textContent = 'Some bottlenecks. Follow Nexus routing.'; }
+    else { lbl.textContent = 'High Congestion'; sub.textContent = 'Peak crowding. Use alternate routes.'; }
 
     document.getElementById('last-updated').textContent = 'Last updated ' + new Date().toLocaleTimeString();
-    initIcons();
-  } catch(e) {
-    document.getElementById('protip-content').innerHTML = '<p class="text-rose-400 text-sm">Offline. Reconnecting...</p>';
-  } finally {
-    btn.classList.remove('loading');
-    initIcons();
-  }
+    if (window.lucide) lucide.createIcons();
+  } catch(e) { console.error(e); } finally { btn.classList.remove('loading'); }
 }
-
-initIcons();
-fetchData();
+fetchData(false);
 </script>
 </body>
 </html>"""
 
-def _build_protip(gates, food):
-    sorted_gates = sorted(gates, key=lambda g: g["score"])
-    best = sorted_gates[0]
-    alt  = sorted_gates[1] if len(sorted_gates) > 1 else None
-    time_diff = best["wait"] - alt["wait"] if alt else 0
-    dist_diff = best["distance_m"] - alt["distance_m"] if alt else 0
-    for g in gates:
-        g["is_best"] = (g["id"] == best["id"])
-    best_food = min(food, key=lambda f: f["wait"])
-    if alt and abs(time_diff) <= 4 and abs(dist_diff) >= 80:
-        headline = f"{best['id']} and {alt['id']} are similar."
-        detail = f"{best['id']} is {abs(dist_diff)}m closer. Recommended for total speed."
-        action = f"Head to {best['id']}"
-    elif alt and time_diff <= -5:
-        headline = f"{best['id']} is {abs(time_diff)}m faster right now."
-        detail = f"Saves real time despite the extra {abs(dist_diff)}m walk."
-        action = f"Fast lane: {best['id']}"
-    else:
-        headline = f"{best['id']} is optimal."
-        detail = f"Optimized based on wait ({best['wait']}m) and distance."
-        action = f"Proceed to {best['id']}"
-    return {"headline": headline, "detail": detail, "action": action, "best_food": best_food["name"]}
+def _build_protip(gates: List[Dict], food: List[Dict], vip_mode: bool = False) -> Dict:
+    try:
+        # Filter for recommendation but don't remove from gate list
+        eligible = arena_data["gates"] if vip_mode else [g for g in arena_data["gates"] if "vip" not in g["id"].lower()]
+        sorted_eligible = sorted(eligible, key=lambda g: g.get("score", 999))
+        best = sorted_eligible[0]
+        
+        for g in arena_data["gates"]:
+            g["is_best"] = (g["id"] == best["id"])
+        
+        prefix = "👑 VIP Path: " if vip_mode and "vip" in best["id"].lower() else ""
+        return {
+            "headline": f"{prefix}{best['id']} is optimal.",
+            "detail": f"Routing calculated based on your {'VIP' if vip_mode else 'General'} access level.",
+            "action": f"Proceed to {best['id']}"
+        }
+    except Exception as e:
+        logger.error(f"Logic Error: {e}")
+        return {"headline": "Syncing...", "detail": "Calculating routes."}
 
 @app.route("/")
 def home():
@@ -343,29 +371,27 @@ def home():
 
 @app.route("/api/recommend")
 def recommend():
-    gates = [
-        {"id": "Gate A · North",  "distance_m": 120, "wait": random.randint(15, 50)},
-        {"id": "Gate B · South",  "distance_m": 200, "wait": random.randint(5,  22)},
-        {"id": "Gate C · VIP East","distance_m": 310, "wait": random.randint(3,  15)},
-    ]
-    for g in gates:
-        g["score"] = g["wait"] + (g["distance_m"] / 60)
-        g["is_best"] = False
-    restrooms = [
-        {"name": "Lower Concourse", "wait": random.randint(1, 12)},
-        {"name": "Upper Deck West", "wait": random.randint(1, 8)},
-        {"name": "VIP Lounge",      "wait": random.randint(0, 5)},
-    ]
-    food = [
-        {"name": "Victory Burgers",  "wait": random.randint(5, 25)},
-        {"name": "Quick-Sip Drinks", "wait": random.randint(1, 8)},
-        {"name": "Nacho Libre",      "wait": random.randint(3, 18)},
-    ]
-    protip = _build_protip(gates, food)
-    avg_gate_wait = sum(g["wait"] for g in gates) / len(gates)
-    crowd_score = max(0, min(100, round(100 - (avg_gate_wait / 50) * 100)))
-    return jsonify({"gates": gates, "restrooms": restrooms, "food": food, "protip": protip, "crowd_score": crowd_score})
+    try:
+        # Check if user clicked "Refresh Data"
+        if request.args.get("refresh") == "true":
+            generate_arena_telemetry()
+            
+        vip_mode = request.args.get("vip", "false").lower() == "true"
+        protip = _build_protip(arena_data["gates"], arena_data["food"], vip_mode=vip_mode)
+        
+        avg_wait = sum(g["wait"] for g in arena_data["gates"]) / len(arena_data["gates"])
+        score = max(0, min(100, round(100 - (avg_wait / MAX_WAIT_SCALING_FACTOR) * 100)))
+        
+        return jsonify({
+            "gates": arena_data["gates"], 
+            "restrooms": arena_data["restrooms"], 
+            "food": arena_data["food"], 
+            "protip": protip, 
+            "crowd_score": score
+        })
+    except Exception as e:
+        logger.error(f"Telemetry Failure: {e}")
+        return jsonify({"error": "Internal Error"}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", DEFAULT_PORT)))

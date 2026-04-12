@@ -7,7 +7,7 @@
                 "lat": 40.758,
                 "lng": -73.9855
             },
-            "current_wait_min": 175
+            "current_wait_min": 176
         },
         {
             "id": "Gate B (South)",
@@ -15,13 +15,13 @@
                 "lat": 40.7585,
                 "lng": -73.984
             },
-            "current_wait_min": 125
+            "current_wait_min": 133
         }
     ],
     "concessions": [
         {
             "name": "Victory Burgers",
-            "wait_time": 11
+            "wait_time": 6
         },
         {
             "name": "Quick-Sip Drinks",

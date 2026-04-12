@@ -36,7 +36,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     color: #e8eaf6;
   }
 
-  /* ── Animated mesh background ── */
   .mesh {
     position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background:
@@ -51,7 +50,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     100% { background-position: 20% 30%, 80% 60%, 60% 40%; }
   }
 
-  /* ── Glass card ── */
   .glass {
     background: var(--glass-bg);
     border: 1px solid var(--glass-bdr);
@@ -62,7 +60,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   }
   .glass:hover { border-color: rgba(255,255,255,0.26); }
 
-  /* ── Status pill ── */
   .live-pill {
     display: inline-flex; align-items: center; gap: 6px;
     background: rgba(0,245,255,0.12); border: 1px solid rgba(0,245,255,0.3);
@@ -73,27 +70,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .live-dot { width:7px; height:7px; border-radius:50%; background:var(--glow-cyan); animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
 
-  /* ── Score ring ── */
   .score-ring { position:relative; display:inline-flex; align-items:center; justify-content:center; }
   .score-ring svg { transform: rotate(-90deg); }
   .score-ring .ring-val {
     position:absolute; font-family:'Syne',sans-serif; font-weight:800; font-size:1.7rem; line-height:1;
   }
 
-  /* ── Wait badge colours ── */
   .wait-low  { color:#4ade80; }
   .wait-mid  { color:#fbbf24; }
   .wait-high { color:#f87171; }
 
-  /* ── Gradient text ── */
   .grad-cyan { background: linear-gradient(135deg,#00f5ff,#00aaff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
   .grad-rose { background: linear-gradient(135deg,#ff2d78,#ff8c42); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
   .grad-amber{ background: linear-gradient(135deg,#ffaa00,#ff6b35); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
 
-  /* ── Pro-tip card accent ── */
   .protip-bar { width:4px; border-radius:4px; background:linear-gradient(to bottom,#00f5ff,#7b2ff7); min-height:100%; }
 
-  /* ── Refresh button ── */
   .btn-refresh {
     background: linear-gradient(135deg,rgba(0,245,255,.15),rgba(123,47,247,.15));
     border: 1px solid rgba(0,245,255,.35);
@@ -109,23 +101,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   }
   .btn-refresh.loading { opacity:.6; pointer-events:none; }
 
-  /* ── Fade-in animation ── */
   .fade-in { animation: fadein .55s ease both; }
   @keyframes fadein { from{opacity:0;transform:translateY(14px);} to{opacity:1;transform:translateY(0);} }
   .delay-1{animation-delay:.08s;} .delay-2{animation-delay:.16s;} .delay-3{animation-delay:.24s;}
 
-  /* ── Section title ── */
   .section-title {
     font-family:'Syne',sans-serif; font-size:.7rem; font-weight:700;
     letter-spacing:.14em; text-transform:uppercase; color:rgba(255,255,255,.38);
     margin-bottom:14px;
   }
 
-  /* ── Skeleton loader ── */
   .skeleton { background:linear-gradient(90deg,rgba(255,255,255,.05) 25%,rgba(255,255,255,.12) 50%,rgba(255,255,255,.05) 75%); background-size:200% 100%; animation:shimmer 1.4s infinite; border-radius:8px; }
   @keyframes shimmer { 0%{background-position:200% 0;} 100%{background-position:-200% 0;} }
 
-  /* ── Scrollbar ── */
   ::-webkit-scrollbar { width:5px; }
   ::-webkit-scrollbar-track { background:transparent; }
   ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.15); border-radius:9999px; }
@@ -136,7 +124,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 <div class="relative z-10 max-w-md mx-auto px-4 py-8 space-y-5">
 
-  <!-- ── Header ── -->
   <header class="text-center fade-in">
     <div class="flex items-center justify-center gap-2 mb-3">
       <span class="live-pill"><span class="live-dot"></span>Live Intelligence</span>
@@ -147,7 +134,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <p class="text-white/40 text-sm font-light tracking-widest uppercase">Antigravity Arena · Crowd OS</p>
   </header>
 
-  <!-- ── Smart Nav Card (Pro-Tip) ── -->
   <div id="smartnav" class="glass p-5 fade-in delay-1">
     <p class="section-title">Smart Navigation</p>
     <div class="flex gap-4">
@@ -160,7 +146,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ── Entry Gates ── -->
   <div class="glass p-5 fade-in delay-2">
     <p class="section-title">Entry Gates</p>
     <div id="gates-list" class="space-y-3">
@@ -170,7 +155,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ── Restrooms + Concessions row ── -->
   <div class="grid grid-cols-2 gap-4 fade-in delay-3">
     <div class="glass p-4">
       <p class="section-title">Restrooms</p>
@@ -188,7 +172,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ── Crowd Score ── -->
   <div class="glass p-5 flex items-center gap-5 fade-in delay-3">
     <div class="score-ring flex-shrink-0">
       <svg width="84" height="84" viewBox="0 0 84 84">
@@ -213,7 +196,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ── Refresh ── -->
   <div class="text-center pb-4 fade-in delay-3">
     <button id="refresh-btn" class="btn-refresh" onclick="fetchData()">
       <i data-lucide="refresh-cw" style="width:15px;height:15px;"></i>
@@ -225,27 +207,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <script>
-lucide.createIcons();
+// Logic to handle Lucide Icons safely
+function initIcons() {
+    if (window.lucide) {
+        lucide.createIcons();
+    }
+}
 
-// ── Helpers ────────────────────────────────────────────────────────────────
 function waitClass(w) {
   if (w <= 8)  return 'wait-low';
   if (w <= 18) return 'wait-mid';
   return 'wait-high';
 }
+
 function waitLabel(w) {
   if (w <= 8)  return '🟢';
   if (w <= 18) return '🟡';
   return '🔴';
 }
-function formatWait(w) {
-  return `<span class="font-bold ${waitClass(w)}">${w}m</span>`;
-}
-function formatWaitSmall(w) {
-  return `<span class="text-xs font-semibold ${waitClass(w)}">${w}m</span>`;
-}
 
-// ── Gate row ───────────────────────────────────────────────────────────────
 function gateRow(g, isBest) {
   const barW = Math.min(100, (g.wait / 50) * 100);
   const barCol = g.wait <= 8 ? '#4ade80' : g.wait <= 18 ? '#fbbf24' : '#f87171';
@@ -258,7 +238,7 @@ function gateRow(g, isBest) {
       <div class="flex-1 min-w-0">
         <div class="flex justify-between items-center mb-1">
           <span class="text-sm font-medium text-white/90 truncate">${g.id}${isBest ? ' <span class="text-xs ml-1 text-cyan-400 font-bold">BEST</span>' : ''}</span>
-          ${formatWait(g.wait)}
+          <span class="font-bold ${waitClass(g.wait)}">${g.wait}m</span>
         </div>
         <div class="h-1.5 rounded-full bg-white/8 overflow-hidden">
           <div style="width:${barW}%;background:${barCol};height:100%;border-radius:999px;transition:width 1s ease;"></div>
@@ -267,7 +247,6 @@ function gateRow(g, isBest) {
     </div>`;
 }
 
-// ── Small row (restroom / food) ────────────────────────────────────────────
 function smallRow(icon, name, wait) {
   return `
     <div class="flex items-center justify-between gap-2">
@@ -275,227 +254,118 @@ function smallRow(icon, name, wait) {
         <i data-lucide="${icon}" style="width:13px;height:13px;flex-shrink:0;color:rgba(255,255,255,.4)"></i>
         <span class="text-xs text-white/70 truncate">${name}</span>
       </div>
-      <div class="flex items-center gap-1">${waitLabel(wait)} ${formatWaitSmall(wait)}</div>
+      <div class="flex items-center gap-1">${waitLabel(wait)} <span class="text-xs font-semibold ${waitClass(wait)}">${wait}m</span></div>
     </div>`;
 }
 
-// ── Pro-Tip builder ────────────────────────────────────────────────────────
-function buildProTip(data) {
-  const { gates, protip } = data;
-  const best = gates.find(g => g.is_best);
-  const alt  = gates.find(g => !g.is_best && g !== best);
-
-  let html = `
-    <p class="text-white/90 font-medium text-sm leading-relaxed">${protip.headline}</p>
-    <p class="text-white/50 text-xs leading-relaxed mt-1">${protip.detail}</p>`;
-
-  if (protip.action) {
-    html += `<div class="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
-      <i data-lucide="zap" style="width:12px;height:12px;"></i>${protip.action}</div>`;
-  }
-  return html;
-}
-
-// ── Crowd score ────────────────────────────────────────────────────────────
-function renderScore(score) {
-  const arc = document.getElementById('score-arc');
-  const val = document.getElementById('score-val');
-  const lbl = document.getElementById('score-label');
-  const sub = document.getElementById('score-sub');
-  const circumference = 226;
-  const offset = circumference - (score / 100) * circumference;
-  setTimeout(() => { arc.style.strokeDashoffset = offset; }, 100);
-  val.textContent = score;
-  if (score >= 75) {
-    lbl.textContent = 'Smooth Flow';
-    lbl.className = 'font-[\'Syne\'] font-bold text-lg grad-cyan';
-    sub.textContent = 'Low congestion — great time to move.';
-  } else if (score >= 45) {
-    lbl.textContent = 'Moderate Crowd';
-    lbl.className = 'font-[\'Syne\'] font-bold text-lg grad-amber';
-    sub.textContent = 'Some bottlenecks. Follow Nexus routing.';
-  } else {
-    lbl.textContent = 'High Congestion';
-    lbl.className = 'font-[\'Syne\'] font-bold text-lg grad-rose';
-    sub.textContent = 'Peak crowding. Use alternate routes.';
-  }
-}
-
-// ── Main fetch ──────────────────────────────────────────────────────────────
 async function fetchData() {
   const btn = document.getElementById('refresh-btn');
   btn.classList.add('loading');
-  btn.innerHTML = '<i data-lucide="loader-2" style="width:15px;height:15px;animation:spin 1s linear infinite;"></i> Refreshing…';
-
+  
   try {
-    const res  = await fetch('/api/recommend?t=' + Date.now());
+    const res  = await fetch('./api/recommend?t=' + Date.now());
     const data = await res.json();
 
-    // Gates
-    const gatesList = document.getElementById('gates-list');
-    gatesList.innerHTML = data.gates.map(g => gateRow(g, g.is_best)).join('');
+    document.getElementById('gates-list').innerHTML = data.gates.map(g => gateRow(g, g.is_best)).join('');
+    document.getElementById('restrooms-list').innerHTML = data.restrooms.map(r => smallRow('toilet', r.name, r.wait)).join('');
+    document.getElementById('food-list').innerHTML = data.food.map(f => smallRow('utensils', f.name, f.wait)).join('');
 
-    // Restrooms
-    const restroomsList = document.getElementById('restrooms-list');
-    restroomsList.innerHTML = data.restrooms.map(r =>
-      smallRow('toilet', r.name, r.wait)).join('');
+    const protip = data.protip;
+    let protipHtml = `<p class="text-white/90 font-medium text-sm leading-relaxed">${protip.headline}</p>
+                      <p class="text-white/50 text-xs leading-relaxed mt-1">${protip.detail}</p>`;
+    if (protip.action) {
+      protipHtml += `<div class="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
+                     <i data-lucide="zap" style="width:12px;height:12px;"></i>${protip.action}</div>`;
+    }
+    document.getElementById('protip-content').innerHTML = protipHtml;
 
-    // Food
-    const foodList = document.getElementById('food-list');
-    foodList.innerHTML = data.food.map(f =>
-      smallRow('utensils', f.name, f.wait)).join('');
+    const score = data.crowd_score;
+    const arc = document.getElementById('score-arc');
+    const offset = 226 - (score / 100) * 226;
+    arc.style.strokeDashoffset = offset;
+    document.getElementById('score-val').textContent = score;
+    
+    const lbl = document.getElementById('score-label');
+    const sub = document.getElementById('score-sub');
+    if (score >= 75) {
+      lbl.textContent = 'Smooth Flow'; lbl.className = 'font-["Syne"] font-bold text-lg grad-cyan';
+      sub.textContent = 'Low congestion — great time to move.';
+    } else if (score >= 45) {
+      lbl.textContent = 'Moderate Crowd'; lbl.className = 'font-["Syne"] font-bold text-lg grad-amber';
+      sub.textContent = 'Some bottlenecks. Follow Nexus routing.';
+    } else {
+      lbl.textContent = 'High Congestion'; lbl.className = 'font-["Syne"] font-bold text-lg grad-rose';
+      sub.textContent = 'Peak crowding. Use alternate routes.';
+    }
 
-    // Pro-tip
-    document.getElementById('protip-content').innerHTML = buildProTip(data);
-
-    // Score
-    renderScore(data.crowd_score);
-
-    // Timestamp
-    document.getElementById('last-updated').textContent =
-      'Last updated ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-
-    lucide.createIcons();
+    document.getElementById('last-updated').textContent = 'Last updated ' + new Date().toLocaleTimeString();
+    initIcons();
   } catch(e) {
-    document.getElementById('protip-content').innerHTML =
-      '<p class="text-rose-400 text-sm">Unable to reach Nexus servers. Retrying…</p>';
+    document.getElementById('protip-content').innerHTML = '<p class="text-rose-400 text-sm">Offline. Reconnecting...</p>';
   } finally {
     btn.classList.remove('loading');
-    btn.innerHTML = '<i data-lucide="refresh-cw" style="width:15px;height:15px;"></i> Refresh Data';
-    lucide.createIcons();
+    initIcons();
   }
 }
 
-// ── Keyframe injection for spinner ─────────────────────────────────────────
-const style = document.createElement('style');
-style.textContent = '@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}';
-document.head.appendChild(style);
-
-// ── Boot ────────────────────────────────────────────────────────────────────
+initIcons();
 fetchData();
 </script>
 </body>
 </html>"""
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  API  –  /api/recommend
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _wait_class(w):
-    if w <= 8:  return "low"
-    if w <= 18: return "mid"
-    return "high"
-
-
 def _build_protip(gates, food):
-    """
-    Weighted scoring: total_time = wait + distance_penalty.
-    Generates a human-readable Pro-Tip comparing the top two options.
-    """
     sorted_gates = sorted(gates, key=lambda g: g["score"])
     best = sorted_gates[0]
     alt  = sorted_gates[1] if len(sorted_gates) > 1 else None
-
     time_diff = best["wait"] - alt["wait"] if alt else 0
     dist_diff = best["distance_m"] - alt["distance_m"] if alt else 0
-
-    # Mark best gate
     for g in gates:
         g["is_best"] = (g["id"] == best["id"])
-
-    # Pick best food
     best_food = min(food, key=lambda f: f["wait"])
-
-    # Compose tip
     if alt and abs(time_diff) <= 4 and abs(dist_diff) >= 80:
-        # Very close wait times but noticeably different distances
-        headline = f"{best['id']} and {alt['id']} have similar queues."
-        detail   = (f"{best['id']} is ~{abs(dist_diff)}m closer — "
-                    f"we recommend it for the shortest total journey time.")
-        action   = f"Head to {best['id']} — {best['distance_m']}m away"
+        headline = f"{best['id']} and {alt['id']} are similar."
+        detail = f"{best['id']} is {abs(dist_diff)}m closer. Recommended for total speed."
+        action = f"Head to {best['id']}"
     elif alt and time_diff <= -5:
-        # Best gate significantly faster
-        headline = f"{best['id']} is {abs(time_diff)} mins faster right now."
-        detail   = (f"Even accounting for the extra {abs(dist_diff)}m walk, "
-                    f"{best['id']} saves you real time. Move now while it's clear.")
-        action   = f"Fast lane: {best['id']} · only {best['wait']}m wait"
-    elif alt and dist_diff <= -60 and abs(time_diff) <= 6:
-        # Best gate is much closer with similar wait
-        headline = f"{best['id']} is closer and just as fast."
-        detail   = (f"It's {abs(dist_diff)}m nearer than {alt['id']} "
-                    f"with only a {abs(time_diff)}-min difference in wait. Easy choice.")
-        action   = f"Save {abs(dist_diff)}m of walking → {best['id']}"
+        headline = f"{best['id']} is {abs(time_diff)}m faster right now."
+        detail = f"Saves real time despite the extra {abs(dist_diff)}m walk."
+        action = f"Fast lane: {best['id']}"
     else:
-        headline = f"{best['id']} is your optimal entry point."
-        detail   = (f"Nexus scoring weighs wait time + walking distance. "
-                    f"{best['id']} scores best right now at {best['wait']} min wait.")
-        action   = f"Proceed to {best['id']}"
-
-    return {
-        "headline": headline,
-        "detail":   detail,
-        "action":   action,
-        "best_food": best_food["name"],
-    }
-
+        headline = f"{best['id']} is optimal."
+        detail = f"Optimized based on wait ({best['wait']}m) and distance."
+        action = f"Proceed to {best['id']}"
+    return {"headline": headline, "detail": detail, "action": action, "best_food": best_food["name"]}
 
 @app.route("/")
 def home():
     return render_template_string(HTML_TEMPLATE)
 
-
 @app.route("/api/recommend")
 def recommend():
-    """
-    Simulates real-time IoT sensor data for gates, restrooms, and food stalls.
-    Applies a weighted scoring algorithm (wait_time + distance_penalty) to
-    determine the optimal fan routing and generates human-readable Pro-Tips.
-    """
-
-    # ── 1. Gates  (distance in metres from main plaza) ──────────────────────
     gates = [
         {"id": "Gate A · North",  "distance_m": 120, "wait": random.randint(15, 50)},
         {"id": "Gate B · South",  "distance_m": 200, "wait": random.randint(5,  22)},
         {"id": "Gate C · VIP East","distance_m": 310, "wait": random.randint(3,  15)},
     ]
-    # Weighted score: every 60 m extra walking ≈ 1 min penalty
     for g in gates:
         g["score"] = g["wait"] + (g["distance_m"] / 60)
         g["is_best"] = False
-
-    # ── 2. Restrooms ─────────────────────────────────────────────────────────
     restrooms = [
-        {"name": "Lower Concourse",  "wait": random.randint(1, 12)},
-        {"name": "Upper Deck West",  "wait": random.randint(1,  8)},
-        {"name": "VIP Lounge",       "wait": random.randint(0,  5)},
+        {"name": "Lower Concourse", "wait": random.randint(1, 12)},
+        {"name": "Upper Deck West", "wait": random.randint(1, 8)},
+        {"name": "VIP Lounge",      "wait": random.randint(0, 5)},
     ]
-
-    # ── 3. Food & Drinks ─────────────────────────────────────────────────────
     food = [
-        {"name": "Victory Burgers",   "wait": random.randint(5,  25)},
-        {"name": "Quick-Sip Drinks",  "wait": random.randint(1,   8)},
-        {"name": "Nacho Libre",       "wait": random.randint(3,  18)},
-        {"name": "Espresso Pit",      "wait": random.randint(1,   6)},
+        {"name": "Victory Burgers",  "wait": random.randint(5, 25)},
+        {"name": "Quick-Sip Drinks", "wait": random.randint(1, 8)},
+        {"name": "Nacho Libre",      "wait": random.randint(3, 18)},
     ]
-
-    # ── 4. Pro-Tip ────────────────────────────────────────────────────────────
     protip = _build_protip(gates, food)
-
-    # ── 5. Crowd Score (0-100, higher = less congested) ───────────────────────
     avg_gate_wait = sum(g["wait"] for g in gates) / len(gates)
-    crowd_score   = max(0, min(100, round(100 - (avg_gate_wait / 50) * 100)))
+    crowd_score = max(0, min(100, round(100 - (avg_gate_wait / 50) * 100)))
+    return jsonify({"gates": gates, "restrooms": restrooms, "food": food, "protip": protip, "crowd_score": crowd_score})
 
-    return jsonify({
-        "gates":       gates,
-        "restrooms":   restrooms,
-        "food":        food,
-        "protip":      protip,
-        "crowd_score": crowd_score,
-    })
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)

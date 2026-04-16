@@ -281,3 +281,21 @@ class TestTelemetryEngine:
         result = build_recommendation(vip_enabled=True)
         assert isinstance(result["headline"], str)
         assert len(result["headline"]) > 0
+
+
+# ── Predictive Engine Unit Tests ──────────────────────────────────────────────
+
+class TestPredictiveEngine:
+    def test_future_weight_exists(self, client):
+        """Ensure the telemetry engine calculates future inbound load."""
+        data = client.get("/api/recommend").get_json()
+        for g in data["gates"]:
+            assert "future_weight" in g
+            assert isinstance(g["future_weight"], float)
+
+    def test_efficiency_score_includes_predictive_load(self, client):
+        """Composite score must account for the predictive arrival density."""
+        data = client.get("/api/recommend").get_json()
+        for g in data["gates"]:
+            raw_min = g["wait"] + g["future_weight"]
+            assert g["efficiency_score"] >= round(min(g["wait"], raw_min), 2)

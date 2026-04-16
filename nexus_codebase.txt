@@ -1,0 +1,1434 @@
+==> main.py <==
+"""
+NEXUS Venue Intelligence OS — Entry Point
+=========================================
+Cloud Run / gunicorn compatible entry point.
+"""
+
+from app import create_app
+
+app = create_app()
+
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+==> app/__init__.py <==
+"""
+NEXUS · app/__init__.py
+=======================
+Flask application factory. Registers blueprints, security headers,
+and boots the persistent telemetry engine.
+"""
+
+from __future__ import annotations
+
+import os
+import logging
+from flask import Flask
+
+
+def create_app() -> Flask:
+    """
+    Application factory.
+
+    Returns:
+        Configured Flask application instance.
+    """
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    app = Flask(__name__, template_folder="../templates", static_folder="../static")
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # ── Security: response headers ────────────────────────────────────────────
+    @app.after_request
+    def apply_security_headers(response):  # type: ignore[return-value]
+        """Attach hardened HTTP security headers to every response."""
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # HSTS — enforced in production via Cloud Run HTTPS termination
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+        # CSP — permits CDN assets (Tailwind, Lucide, Google Fonts, Maps)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
+            "https://unpkg.com https://maps.googleapis.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com; "
+            "img-src 'self' data: https://maps.gstatic.com https://maps.googleapis.com; "
+            "connect-src 'self' https://maps.googleapis.com;"
+        )
+        return response
+
+    # ── Register blueprints ───────────────────────────────────────────────────
+    from app.routes import bp as main_bp
+    app.register_blueprint(main_bp)
+
+    return app
+
+==> app/__pycache__ <==
+
+==> app/routes.py <==
+"""
+NEXUS · app/routes.py
+=====================
+All URL routes for the NEXUS platform.
+
+Endpoints:
+  GET /              — Renders the high-fidelity dashboard
+  GET /api/recommend — Telemetry + recommendation JSON API
+  GET /api/health    — Liveness probe for Cloud Run
+"""
+
+from __future__ import annotations
+
+import html
+import logging
+import os
+from typing import Any, Dict, Tuple
+
+from flask import Blueprint, jsonify, render_template, request
+from flask.wrappers import Response
+
+from utils.telemetry import (
+    arena_state,
+    build_recommendation,
+    crowd_score,
+    sync_arena_telemetry,
+)
+
+logger = logging.getLogger("NEXUS-ROUTES")
+bp = Blueprint("main", __name__)
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _sanitize_str(value: Any, max_len: int = 64) -> str:
+    """
+    Sanitize and truncate an untrusted string value from query params.
+
+    Args:
+        value:   Input value (may be None or non-string).
+        max_len: Maximum permitted length after sanitisation.
+
+    Returns:
+        Safe, HTML-escaped string, truncated to ``max_len``.
+    """
+    if value is None:
+        return ""
+    return html.escape(str(value)[:max_len])
+
+
+def _parse_bool_param(param: str, default: bool = False) -> bool:
+    """
+    Parse a boolean-like query-string parameter.
+
+    Args:
+        param:   Raw query string value.
+        default: Fallback if value is unrecognisable.
+
+    Returns:
+        Boolean interpretation.
+    """
+    return param.lower() in ("true", "1", "yes") if param else default
+
+
+# ── Views ─────────────────────────────────────────────────────────────────────
+
+@bp.route("/")
+def index() -> str:
+    """
+    Render the NEXUS dashboard.
+
+    Injects the Maps API key from the environment at template render time;
+    the key is never exposed in source control.
+
+    Returns:
+        Rendered HTML string.
+    """
+    maps_key: str = os.getenv("MAPS_API_KEY", "")
+    logger.info("Dashboard requested from %s", request.remote_addr)
+    return render_template("index.html", maps_key=maps_key)
+
+
+# ── API ───────────────────────────────────────────────────────────────────────
+
+@bp.route("/api/recommend")
+def api_recommend() -> Tuple[Response, int]:
+    """
+    Primary telemetry and recommendation endpoint.
+
+    Query Parameters:
+        vip     (bool):  Whether VIP gates should be included in routing.
+        refresh (bool):  Force a full telemetry re-sync before responding.
+
+    Returns:
+        JSON payload with gates, restrooms, food, protip, crowd_score.
+    """
+    try:
+        # ── Input validation ──────────────────────────────────────────────────
+        raw_vip     = _sanitize_str(request.args.get("vip", "false"))
+        raw_refresh = _sanitize_str(request.args.get("refresh", "false"))
+
+        vip_enabled: bool = _parse_bool_param(raw_vip)
+        force_refresh: bool = _parse_bool_param(raw_refresh)
+
+        logger.info(
+            "API /recommend — vip=%s force_refresh=%s addr=%s",
+            vip_enabled, force_refresh, request.remote_addr,
+        )
+
+        if force_refresh:
+            sync_arena_telemetry()
+
+        protip: Dict[str, str] = build_recommendation(vip_enabled=vip_enabled)
+        score: int = crowd_score()
+
+        payload: Dict[str, Any] = {
+            "gates":       arena_state["gates"],
+            "restrooms":   arena_state["restrooms"],
+            "food":        arena_state["food_services"],
+            "protip":      protip,
+            "crowd_score": score,
+            "telemetry_id": arena_state["telemetry_id"],
+        }
+
+        return jsonify(payload), 200
+
+    except Exception as exc:
+        logger.critical("API failure: %s", exc, exc_info=True)
+        return jsonify({"error": "Telemetry service temporarily unavailable"}), 500
+
+
+@bp.route("/api/health")
+def health() -> Tuple[Response, int]:
+    """
+    Liveness probe for Cloud Run health checks.
+
+    Returns:
+        JSON ``{"status": "ok"}`` with HTTP 200.
+    """
+    return jsonify({"status": "ok", "telemetry_id": arena_state["telemetry_id"]}), 200
+
+==> utils/__init__.py <==
+"""NEXUS utility modules."""
+
+==> utils/__pycache__ <==
+
+==> utils/telemetry.py <==
+"""
+NEXUS · utils/telemetry.py
+==========================
+Persistent Telemetry State Engine.
+
+Simulates live IoT sensor data from stadium hardware. In production this
+layer would subscribe to a Firestore / Pub-Sub stream; for the hackathon
+demo it maintains a global in-memory state that prevents UI flickering
+between reloads (data only refreshes on an explicit force-sync).
+
+Algorithm: Weighted Multi-Variable Pathfinding
+----------------------------------------------
+  composite_score = wait_time
+                  + (distance_m / WALKING_SPEED_M_PER_MIN)   # walk penalty
+                  + crowd_velocity_penalty                    # density factor
+                  + historical_decay_bonus                    # recency weight
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import random
+import time
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("NEXUS-TELEMETRY")
+
+# ── Physics Constants ────────────────────────────────────────────────────────
+
+WALKING_SPEED_M_PER_MIN: float = 60.0   # avg pedestrian: 5 km/h ≈ 83 m/min (reduced for crowds)
+MAX_WAIT_SCALING_FACTOR: int   = 50     # wait ceiling used for crowd-score normalisation
+VELOCITY_WEIGHT: float         = 0.35   # influence of crowd density on composite score
+DECAY_HALF_LIFE_MIN: float     = 8.0    # historical wait decays over this window (mins)
+
+# ── Arena Coordinates ────────────────────────────────────────────────────────
+
+ARENA_LAT: float = 40.8128
+ARENA_LNG: float = -74.0743
+
+# ── Persistent Global State ──────────────────────────────────────────────────
+
+arena_state: Dict[str, Any] = {
+    "telemetry_id":   0,
+    "last_updated":   0.0,
+    "gates":          [],
+    "restrooms":      [],
+    "food_services":  [],
+    # Stores the last N wait measurements per gate for decay calculation
+    "_history":       {},
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Internal helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _crowd_velocity_penalty(wait: int, distance_m: int) -> float:
+    """
+    Estimate how crowd density near a gate inflates effective travel time.
+
+    Higher wait → denser crowd → slower walking speed near the gate.
+    Returns an additive minute penalty.
+
+    Args:
+        wait:        Simulated queue wait time in minutes.
+        distance_m:  Gate distance from reference point in metres.
+
+    Returns:
+        Float penalty in minutes.
+    """
+    density_ratio = wait / MAX_WAIT_SCALING_FACTOR          # 0.0 – 1.0
+    approach_slowdown = density_ratio * (distance_m / 200)  # heavier far away
+    return round(approach_slowdown * VELOCITY_WEIGHT, 2)
+
+
+def _historical_decay_bonus(gate_id: str, current_wait: int) -> float:
+    """
+    Compute a recency-weighted bonus that rewards gates whose queues are
+    trending downward.  Uses exponential decay over DECAY_HALF_LIFE_MIN.
+
+    Args:
+        gate_id:       Unique gate identifier string.
+        current_wait:  Latest observed wait time in minutes.
+
+    Returns:
+        Float score adjustment (negative = bonus, positive = penalty).
+    """
+    history: List[tuple[float, int]] = arena_state["_history"].get(gate_id, [])
+    if len(history) < 2:
+        return 0.0
+
+    prev_time, prev_wait = history[-1]
+    elapsed = (time.time() - prev_time) / 60.0          # convert to minutes
+    decay_factor = math.exp(-elapsed / DECAY_HALF_LIFE_MIN)
+    trend = (current_wait - prev_wait) * decay_factor   # positive = getting worse
+    return round(trend * 0.5, 2)
+
+
+def _record_history(gate_id: str, wait: int) -> None:
+    """Append a (timestamp, wait) sample to the rolling history buffer."""
+    buf = arena_state["_history"].setdefault(gate_id, [])
+    buf.append((time.time(), wait))
+    if len(buf) > 10:   # keep last 10 samples
+        buf.pop(0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Public API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def sync_arena_telemetry() -> None:
+    """
+    Simulate a hardware handshake with all arena IoT sensors.
+
+    Refreshes gate, restroom, and food-service wait times in-place using
+    the composite pathfinding score so the recommendation engine always has
+    pre-computed values ready.
+
+    Side-effects:
+        Mutates the global `arena_state` dict.
+    """
+    logger.info("NEXUS-ENGINE: Initiating full telemetry sync (id=%d)", arena_state["telemetry_id"] + 1)
+
+    arena_state["telemetry_id"] += 1
+    arena_state["last_updated"] = time.time()
+
+    # ── Gate Telemetry ────────────────────────────────────────────────────────
+    raw_gates = [
+        {"id": "Gate A · North Concourse", "distance_m": 120, "lat": 40.8140, "lng": -74.0750, "type": "GA",  "wait": random.randint(18, 45)},
+        {"id": "Gate B · South Entry",     "distance_m": 230, "lat": 40.8120, "lng": -74.0740, "type": "GA",  "wait": random.randint(5,  18)},
+        {"id": "Gate C · VIP East Deck",   "distance_m": 310, "lat": 40.8130, "lng": -74.0730, "type": "VIP", "wait": random.randint(2,   8)},
+    ]
+
+    for g in raw_gates:
+        gid   = g["id"]
+        wait  = g["wait"]
+        dist  = g["distance_m"]
+
+        walk_time = dist / WALKING_SPEED_M_PER_MIN
+        vel_pen   = _crowd_velocity_penalty(wait, dist)
+        decay_adj = _historical_decay_bonus(gid, wait)
+
+        raw_score = wait + walk_time + vel_pen + decay_adj
+        g["efficiency_score"] = round(max(wait, raw_score), 2)
+        g["is_best"]          = False   # resolved in recommendation engine
+        g["walk_min"]         = round(walk_time, 1)
+        g["vel_penalty"]      = vel_pen
+
+        _record_history(gid, wait)
+
+    arena_state["gates"] = raw_gates
+
+    # ── Restroom Telemetry ────────────────────────────────────────────────────
+    arena_state["restrooms"] = [
+        {"name": "Lower Deck A",       "wait": random.randint(1, 10), "status": "Clean"},
+        {"name": "VIP Lounge North",   "wait": random.randint(0,  4), "status": "Premium"},
+        {"name": "Upper Concourse B",  "wait": random.randint(2, 14), "status": "Clean"},
+    ]
+
+    # ── Food Service Telemetry ────────────────────────────────────────────────
+    arena_state["food_services"] = [
+        {"name": "Victory Burgers",    "wait": random.randint(10, 30), "popularity": "High"},
+        {"name": "Espresso Pit Stop",  "wait": random.randint(2,   8), "popularity": "Medium"},
+        {"name": "Nacho Libre Tacos",  "wait": random.randint(5,  15), "popularity": "Medium"},
+        {"name": "Quick-Sip Bar",      "wait": random.randint(1,   6), "popularity": "Low"},
+    ]
+
+    logger.info(
+        "NEXUS-ENGINE: Sync complete — gates=%d restrooms=%d food=%d",
+        len(arena_state["gates"]),
+        len(arena_state["restrooms"]),
+        len(arena_state["food_services"]),
+    )
+
+
+def build_recommendation(vip_enabled: bool = False) -> Dict[str, str]:
+    """
+    Determine optimal fan routing using the composite efficiency scores.
+
+    When ``vip_enabled`` is False, VIP-type gates are excluded from
+    consideration (they remain visible in the gate list but never receive
+    the OPTIMAL badge).
+
+    Args:
+        vip_enabled: Whether the requesting user has VIP access unlocked.
+
+    Returns:
+        Dictionary with ``headline``, ``detail``, and ``action`` strings.
+    """
+    try:
+        eligible: List[Dict[str, Any]] = (
+            arena_state["gates"]
+            if vip_enabled
+            else [g for g in arena_state["gates"] if g["type"] != "VIP"]
+        )
+
+        if not eligible:
+            eligible = arena_state["gates"]   # safety fallback
+
+        best = min(eligible, key=lambda g: g["efficiency_score"])
+
+        # Mark is_best across the full gate list
+        for g in arena_state["gates"]:
+            g["is_best"] = g["id"] == best["id"]
+
+        alt_gates = [g for g in eligible if g["id"] != best["id"]]
+        alt: Optional[Dict[str, Any]] = min(alt_gates, key=lambda g: g["efficiency_score"]) if alt_gates else None
+
+        vip_prefix = "👑 VIP Routing Active — " if (vip_enabled and best["type"] == "VIP") else ""
+
+        # ── Narrative generation ──────────────────────────────────────────────
+        if alt:
+            wait_delta = alt["wait"] - best["wait"]
+            dist_delta = best["distance_m"] - alt["distance_m"]
+
+            if wait_delta >= 8 and dist_delta < 100:
+                headline = f"{vip_prefix}{best['id']} is {wait_delta} mins faster."
+                detail   = (
+                    f"NEXUS composite score: {best['efficiency_score']} vs {alt['efficiency_score']}. "
+                    f"Crowd velocity penalty factored in. Move now — queue is trending clear."
+                )
+            elif abs(wait_delta) <= 3 and dist_delta < -80:
+                headline = f"{vip_prefix}{best['id']} vs {alt['id']}: near-identical queues."
+                detail   = (
+                    f"{alt['id']} is {abs(dist_delta)}m closer. NEXUS recommends it for "
+                    f"total transit savings ({alt['efficiency_score']} min score)."
+                )
+            else:
+                headline = f"{vip_prefix}{best['id']} is your optimal route."
+                detail   = (
+                    f"Composite score: {best['efficiency_score']} mins (wait + walk + density). "
+                    f"Saves ~{round(alt['efficiency_score'] - best['efficiency_score'], 1)} mins vs next best."
+                )
+        else:
+            headline = f"{vip_prefix}{best['id']} is optimal."
+            detail   = f"Composite score: {best['efficiency_score']} mins total transit time."
+
+        return {
+            "headline": headline,
+            "detail":   detail,
+            "action":   f"Navigate to {best['id']}",
+        }
+
+    except Exception as exc:
+        logger.error("Recommendation engine failure: %s", exc)
+        return {
+            "headline": "Intelligence System Syncing",
+            "detail":   "Recalculating safest routes…",
+            "action":   "Stand by",
+        }
+
+
+def crowd_score() -> int:
+    """
+    Compute a 0-100 crowd-flow score (higher = less congested).
+
+    Returns:
+        Integer crowd score.
+    """
+    if not arena_state["gates"]:
+        return 50
+    avg_wait = sum(g["wait"] for g in arena_state["gates"]) / len(arena_state["gates"])
+    return max(0, min(100, round(100 - (avg_wait / MAX_WAIT_SCALING_FACTOR) * 100)))
+
+
+# Boot-time acquisition
+sync_arena_telemetry()
+
+==> templates/index.html <==
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="theme-color" content="#04050f"/>
+<title>NEXUS · Venue Intelligence OS</title>
+
+<!-- Accessibility: skip navigation -->
+<a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[9999] focus:bg-cyan-400 focus:text-black focus:px-4 focus:py-2 focus:rounded-lg focus:font-bold">Skip to main content</a>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=DM+Sans:wght@300;400;500;700&display=swap" rel="stylesheet"/>
+
+{% if maps_key %}
+<script src="https://maps.googleapis.com/maps/api/js?key={{ maps_key }}&libraries=visualization,geometry&callback=initMap" async defer></script>
+{% endif %}
+
+<style>
+/* ── Design tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --cyan:        #00f5ff;
+  --rose:        #ff2d78;
+  --amber:       #ffaa00;
+  --violet:      #7b2ff7;
+  --bg:          #04050f;
+  --glass:       rgba(255,255,255,0.055);
+  --glass-bdr:   rgba(255,255,255,0.11);
+  --glass-hover: rgba(255,255,255,0.24);
+  --font-display: 'Orbitron', monospace;
+  --font-body:    'DM Sans', sans-serif;
+}
+
+/* ── Resets ──────────────────────────────────────────────────────────────────*/
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { scroll-behavior: smooth; }
+body { font-family: var(--font-body); background: var(--bg); color: #e8eaf6; min-height: 100vh; overflow-x: hidden; }
+
+/* ── Accessibility ───────────────────────────────────────────────────────────*/
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; border-radius: 6px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.sr-only.focus\:not-sr-only:focus { position: fixed; width: auto; height: auto; clip: auto; white-space: normal; }
+
+/* High-contrast mode support */
+@media (forced-colors: active) {
+  .glass { border: 2px solid ButtonText; }
+  .btn-action, .btn-map { border: 2px solid Highlight; }
+}
+
+/* ── Animated Mesh Background ────────────────────────────────────────────────*/
+.mesh {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse 90% 70% at  5% 15%, rgba(0,245,255,0.10) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 60% at 92% 85%, rgba(255,45,120,0.09) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 45% at 50% 50%, rgba(123,47,247,0.07) 0%, transparent 65%),
+    var(--bg);
+  animation: mesh-drift 18s ease-in-out infinite alternate;
+}
+@keyframes mesh-drift {
+  0%   { background-position: 0% 0%,   100% 100%, 50% 50%; }
+  100% { background-position: 12% 18%, 88% 78%,  62% 44%; }
+}
+
+/* Scanline overlay for "terminal" feel */
+.mesh::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.04) 2px,
+    rgba(0,0,0,0.04) 4px
+  );
+  pointer-events: none;
+}
+
+/* ── Glassmorphism ───────────────────────────────────────────────────────────*/
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-bdr);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border-radius: 24px;
+  transition: border-color .3s ease, box-shadow .3s ease;
+}
+.glass:hover { border-color: var(--glass-hover); }
+
+/* ── Live Pill ───────────────────────────────────────────────────────────────*/
+.live-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: rgba(0,245,255,0.09); border: 1px solid rgba(0,245,255,0.25);
+  border-radius: 100px; padding: 5px 15px;
+  font-family: var(--font-display); font-size: .65rem; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--cyan);
+}
+.pulse-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--cyan);
+  animation: pulse-ring 2s infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0   rgba(0,245,255,.7); transform: scale(.9); }
+  70%  { box-shadow: 0 0 0 10px rgba(0,245,255,0); transform: scale(1); }
+  100% { box-shadow: 0 0 0 0   rgba(0,245,255,0); transform: scale(.9); }
+}
+
+/* ── Typography ──────────────────────────────────────────────────────────────*/
+.grad-cyan  { background: linear-gradient(135deg,#00f5ff,#7b2ff7); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.grad-amber { background: linear-gradient(135deg,#ffaa00,#ff6b35); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.grad-rose  { background: linear-gradient(135deg,#ff2d78,#ff8c42); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.section-label {
+  font-family: var(--font-display); font-size: .6rem; font-weight: 700;
+  letter-spacing: .18em; text-transform: uppercase; color: rgba(255,255,255,.3);
+  margin-bottom: 16px;
+}
+
+/* ── VIP Toggle ──────────────────────────────────────────────────────────────*/
+.vip-wrap {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.18);
+  border-radius: 100px; padding: 7px 18px 7px 12px;
+  cursor: pointer; user-select: none;
+  transition: border-color .35s, background .35s, box-shadow .35s;
+}
+.vip-wrap:hover  { border-color: rgba(255,170,0,.45); background: rgba(255,170,0,.07); }
+.vip-wrap.active {
+  border-color: rgba(255,170,0,.7);
+  background: linear-gradient(135deg, rgba(255,170,0,.14), rgba(255,107,53,.10));
+  box-shadow: 0 0 24px rgba(255,170,0,.22);
+}
+.vip-track {
+  position: relative; width: 38px; height: 20px;
+  background: rgba(255,255,255,.13); border: 1px solid rgba(255,255,255,.2);
+  border-radius: 100px; transition: background .3s, box-shadow .3s;
+}
+.vip-wrap.active .vip-track {
+  background: linear-gradient(90deg,#ffaa00,#ff6b35);
+  box-shadow: 0 0 12px rgba(255,170,0,.55);
+  border-color: transparent;
+}
+.vip-thumb {
+  position: absolute; top: 2px; left: 2px;
+  width: 14px; height: 14px; border-radius: 50%; background: rgba(255,255,255,.6);
+  box-shadow: 0 1px 5px rgba(0,0,0,.5);
+  transition: transform .32s cubic-bezier(.34,1.56,.64,1), background .3s;
+}
+.vip-wrap.active .vip-thumb { transform: translateX(18px); background: #fff; }
+.vip-label {
+  font-family: var(--font-display); font-size: .6rem; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: rgba(255,255,255,.65);
+  transition: color .3s;
+}
+.vip-wrap.active .vip-label { color: var(--amber); }
+.vip-crown { transition: opacity .3s, filter .3s; opacity: .7; }
+.vip-wrap.active .vip-crown { opacity: 1; filter: drop-shadow(0 0 5px rgba(255,170,0,.8)); }
+
+/* ── ProTip accent bar ───────────────────────────────────────────────────────*/
+.tip-bar { width: 3px; border-radius: 4px; background: linear-gradient(to bottom,#00f5ff,#7b2ff7); min-height: 100%; flex-shrink: 0; }
+
+/* ── Gate bars ───────────────────────────────────────────────────────────────*/
+.wait-low  { color: #4ade80; }
+.wait-mid  { color: #fbbf24; }
+.wait-high { color: #f87171; }
+.bar-track { height: 4px; border-radius: 100px; background: rgba(255,255,255,.06); overflow: hidden; }
+.bar-fill  { height: 100%; border-radius: 100px; transition: width 1.3s cubic-bezier(.4,0,.2,1); }
+
+/* ── Score Ring ──────────────────────────────────────────────────────────────*/
+.score-ring { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.score-ring svg { transform: rotate(-90deg); }
+.score-ring .ring-val { position: absolute; font-family: var(--font-display); font-weight: 900; font-size: 1.6rem; }
+
+/* ── Map Overlay ─────────────────────────────────────────────────────────────*/
+#map-overlay {
+  display: none; position: fixed; inset: 0; z-index: 1000;
+  background: rgba(4,5,15,.97); backdrop-filter: blur(32px);
+  padding: 12px;
+}
+#nexus-map { width: 100%; height: 100%; border-radius: 24px; border: 1px solid rgba(255,255,255,.08); }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────*/
+.btn-action {
+  background: linear-gradient(135deg, rgba(0,245,255,.13), rgba(123,47,247,.13));
+  border: 1px solid rgba(0,245,255,.3); color: var(--cyan);
+  font-family: var(--font-display); font-weight: 700; font-size: .7rem;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: 14px; width: 100%; border-radius: 100px;
+  cursor: pointer; transition: all .25s;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-action:hover { background: linear-gradient(135deg, rgba(0,245,255,.25), rgba(123,47,247,.25)); box-shadow: 0 0 28px rgba(0,245,255,.22); }
+.btn-action:active { transform: scale(.98); }
+.btn-action.loading { opacity: .55; pointer-events: none; }
+.btn-map {
+  background: rgba(0,245,255,.08); border: 1px solid rgba(0,245,255,.25); color: var(--cyan);
+  font-family: var(--font-display); font-size: .58rem; font-weight: 700; letter-spacing: .1em;
+  padding: 6px 12px; border-radius: 8px; cursor: pointer; transition: all .2s;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.btn-map:hover { background: rgba(0,245,255,.15); }
+
+/* ── Skeleton ────────────────────────────────────────────────────────────────*/
+.skeleton {
+  background: linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);
+  background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px;
+}
+@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+/* ── Page entrance ───────────────────────────────────────────────────────────*/
+.fade-in { animation: fadein .6s ease both; }
+.d1 { animation-delay: .06s; } .d2 { animation-delay: .14s; } .d3 { animation-delay: .22s; } .d4 { animation-delay: .30s; }
+@keyframes fadein { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+
+/* Micro-interaction: gate row highlight on best */
+.gate-row-best { position: relative; }
+.gate-row-best::before {
+  content: '';
+  position: absolute; inset: -4px -8px; border-radius: 16px;
+  background: rgba(0,245,255,.04); border: 1px solid rgba(0,245,255,.12);
+  pointer-events: none;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────────*/
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 9999px; }
+
+/* ── Spinner ─────────────────────────────────────────────────────────────────*/
+@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }
+.spin { animation: spin .9s linear infinite; }
+</style>
+</head>
+
+<body>
+<div class="mesh" aria-hidden="true"></div>
+
+<!-- ── Map Overlay ─────────────────────────────────────────────────────── -->
+<div id="map-overlay" role="dialog" aria-modal="true" aria-label="Geospatial Intelligence Map">
+  <div class="glass w-full h-full p-4 flex flex-col relative">
+    <button id="map-close-btn"
+            onclick="toggleMap(false)"
+            aria-label="Close map"
+            class="absolute top-5 right-5 z-[1001] bg-white/10 hover:bg-white/20 p-2 rounded-full border border-white/20 transition">
+      <i data-lucide="x" style="width:18px;height:18px;color:rgba(255,255,255,.7)"></i>
+    </button>
+    <div class="mb-3">
+      <p class="section-label !mb-0">Geospatial Intelligence</p>
+      <p class="text-[9px] text-white/35 uppercase tracking-widest mt-0.5">Antigravity Arena · Crowd Heatmap</p>
+    </div>
+    <div id="nexus-map" class="flex-1" aria-label="Stadium map with gate markers and crowd heatmap"></div>
+  </div>
+</div>
+
+<!-- ── Main Dashboard ──────────────────────────────────────────────────── -->
+<main id="main-content" class="relative z-10 max-w-md mx-auto px-4 py-9 space-y-5">
+
+  <!-- Header -->
+  <header class="text-center space-y-3 fade-in" role="banner">
+    <div><span class="live-pill" role="status" aria-live="polite"><span class="pulse-dot" aria-hidden="true"></span>Live Arena Sync</span></div>
+
+    <h1 class="font-['Orbitron'] font-black text-5xl tracking-tight">
+      <span class="grad-cyan" aria-label="NEXUS">NEXUS</span>
+    </h1>
+    <p class="text-white/25 text-[9px] tracking-[0.45em] uppercase font-bold">Stadium Intelligence OS · v4.3</p>
+
+    <!-- VIP Toggle -->
+    <div style="display:flex;justify-content:center;margin-top:14px;">
+      <div id="vip-btn"
+           class="vip-wrap"
+           role="switch"
+           aria-checked="false"
+           aria-label="Toggle VIP gate access"
+           tabindex="0"
+           onclick="toggleVip()"
+           onkeydown="if(event.key==='Enter'||event.key===' ')toggleVip()">
+        <svg class="vip-crown" width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="#ffaa00" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
+        </svg>
+        <div class="vip-track" aria-hidden="true"><div class="vip-thumb"></div></div>
+        <span class="vip-label">VIP Access</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Smart Navigation -->
+  <section class="glass p-6 fade-in d1" aria-labelledby="nav-heading">
+    <div class="flex justify-between items-center mb-4">
+      <p id="nav-heading" class="section-label !mb-0">Smart Navigation</p>
+      <button class="btn-map" onclick="toggleMap(true)" aria-label="Open heatmap view">
+        <i data-lucide="map" style="width:11px;height:11px;" aria-hidden="true"></i>
+        HEATMAP
+      </button>
+    </div>
+    <div class="flex gap-4">
+      <div class="tip-bar" aria-hidden="true"></div>
+      <div id="tip-content" class="space-y-2 w-full" aria-live="polite" aria-atomic="true">
+        <div class="skeleton h-5 w-3/4"></div>
+        <div class="skeleton h-4 w-full"></div>
+        <div class="skeleton h-4 w-5/6"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Entry Gates -->
+  <section class="glass p-6 fade-in d2" aria-labelledby="gates-heading">
+    <p id="gates-heading" class="section-label">Entry Telemetry</p>
+    <div id="gates-list" class="space-y-4" role="list" aria-live="polite">
+      <div class="skeleton h-14 w-full"></div>
+      <div class="skeleton h-14 w-full"></div>
+      <div class="skeleton h-14 w-full"></div>
+    </div>
+  </section>
+
+  <!-- Restrooms + Food -->
+  <div class="grid grid-cols-2 gap-4 fade-in d3">
+    <section class="glass p-4" aria-labelledby="restrooms-heading">
+      <p id="restrooms-heading" class="section-label text-[9px]">Restrooms</p>
+      <div id="restrooms-list" class="space-y-3" aria-live="polite">
+        <div class="skeleton h-8 w-full"></div>
+        <div class="skeleton h-8 w-full"></div>
+      </div>
+    </section>
+    <section class="glass p-4" aria-labelledby="food-heading">
+      <p id="food-heading" class="section-label text-[9px]">Dining Stalls</p>
+      <div id="food-list" class="space-y-3" aria-live="polite">
+        <div class="skeleton h-8 w-full"></div>
+        <div class="skeleton h-8 w-full"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Crowd Score -->
+  <section class="glass p-5 flex items-center gap-5 fade-in d4" aria-labelledby="score-heading">
+    <div class="score-ring flex-shrink-0" aria-hidden="true">
+      <svg width="90" height="90" viewBox="0 0 90 90">
+        <circle cx="45" cy="45" r="38" fill="none" stroke="rgba(255,255,255,.06)" stroke-width="7"/>
+        <circle id="score-arc" cx="45" cy="45" r="38" fill="none"
+                stroke="url(#scoreGrad)" stroke-width="7" stroke-linecap="round"
+                stroke-dasharray="239" stroke-dashoffset="239"
+                style="transition:stroke-dashoffset 1.4s cubic-bezier(.4,0,.2,1)"/>
+        <defs>
+          <linearGradient id="scoreGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%"   stop-color="#00f5ff"/>
+            <stop offset="100%" stop-color="#7b2ff7"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span id="score-val" class="ring-val text-white/90">—</span>
+    </div>
+    <div>
+      <p id="score-heading" class="section-label mb-1">Crowd Score</p>
+      <p id="score-label"   class="font-['Orbitron'] font-bold text-lg text-white/90" aria-live="polite">—</p>
+      <p id="score-sub"     class="text-white/40 text-[11px] mt-1" aria-live="polite">Calculating…</p>
+    </div>
+  </section>
+
+  <!-- Refresh -->
+  <div class="text-center pb-4 fade-in d4">
+    <button id="sync-btn"
+            class="btn-action"
+            onclick="syncTelemetry(true)"
+            aria-label="Force telemetry synchronisation">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;" aria-hidden="true"></i>
+      FORCE TELEMETRY SYNC
+    </button>
+    <p id="last-sync" class="text-white/20 text-[9px] mt-3 uppercase tracking-widest" aria-live="polite"></p>
+  </div>
+
+</main>
+
+<!-- ── JavaScript ──────────────────────────────────────────────────────── -->
+<script>
+'use strict';
+
+// ─── State ──────────────────────────────────────────────────────────────────
+let vipEnabled = false;
+let nexusMap   = null;
+let heatLayer  = null;
+let mapMarkers = [];
+
+// ─── Icons ──────────────────────────────────────────────────────────────────
+function refreshIcons() {
+  if (window.lucide) lucide.createIcons();
+}
+
+// ─── VIP Toggle ─────────────────────────────────────────────────────────────
+function toggleVip() {
+  vipEnabled = !vipEnabled;
+  const btn = document.getElementById('vip-btn');
+  btn.classList.toggle('active', vipEnabled);
+  btn.setAttribute('aria-checked', String(vipEnabled));
+  loadData(false);
+}
+
+// ─── Map ─────────────────────────────────────────────────────────────────────
+function initMap() {
+  const nightStyle = [
+    { elementType: 'geometry',                     stylers: [{ color: '#0e0f1e' }] },
+    { elementType: 'labels.text.fill',             stylers: [{ color: '#33334d' }] },
+    { featureType: 'poi',                          stylers: [{ visibility: 'off' }] },
+    { featureType: 'transit',                      stylers: [{ visibility: 'off' }] },
+    { featureType: 'road', elementType: 'geometry',stylers: [{ color: '#16172a' }] },
+    { featureType: 'water',                        stylers: [{ color: '#080916' }] },
+  ];
+  nexusMap = new google.maps.Map(document.getElementById('nexus-map'), {
+    center: { lat: 40.8128, lng: -74.0743 }, zoom: 17,
+    disableDefaultUI: true, styles: nightStyle,
+  });
+}
+
+function toggleMap(show) {
+  const overlay = document.getElementById('map-overlay');
+  overlay.style.display = show ? 'block' : 'none';
+  if (show && nexusMap) {
+    google.maps.event.trigger(nexusMap, 'resize');
+    renderHeatmap();
+  }
+}
+
+async function renderHeatmap() {
+  if (!nexusMap) return;
+  mapMarkers.forEach(m => m.setMap(null));
+  mapMarkers = [];
+
+  const res  = await fetch(`/api/recommend?vip=${vipEnabled}`);
+  const data = await res.json();
+
+  const heatPts = data.gates.map(g => ({
+    location: new google.maps.LatLng(g.lat, g.lng),
+    weight: g.wait * 2,
+  }));
+
+  data.gates.forEach(g => {
+    // Advanced HTML Marker via AdvancedMarkerElement (graceful fallback)
+    const div = document.createElement('div');
+    div.style.cssText = `
+      background:${g.is_best ? 'rgba(0,245,255,.85)' : 'rgba(255,45,120,.7)'};
+      border:2px solid white; border-radius:50%;
+      width:32px; height:32px; display:flex; align-items:center; justify-content:center;
+      font-weight:800; font-size:10px; color:${g.is_best ? '#000' : '#fff'}; cursor:pointer;`;
+    div.textContent = g.wait + 'm';
+    div.title = g.id;
+
+    if (google.maps.marker && google.maps.marker.AdvancedMarkerElement) {
+      const m = new google.maps.marker.AdvancedMarkerElement({
+        position: { lat: g.lat, lng: g.lng },
+        map: nexusMap, content: div,
+      });
+      mapMarkers.push({ setMap: (x) => m.map = x ? nexusMap : null });
+    } else {
+      const m = new google.maps.Marker({
+        position: { lat: g.lat, lng: g.lng }, map: nexusMap, title: g.id,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE, scale: 10,
+          fillColor: g.is_best ? '#00f5ff' : '#ff2d78', fillOpacity: .85,
+          strokeWeight: 2, strokeColor: '#ffffff',
+        },
+        label: { text: g.wait + 'm', color: 'white', fontSize: '10px', fontWeight: 'bold' },
+      });
+      mapMarkers.push(m);
+    }
+
+    // Draw Directions path to best gate
+    if (g.is_best) {
+      const dirSvc = new google.maps.DirectionsService();
+      const dirRnd = new google.maps.DirectionsRenderer({
+        map: nexusMap, suppressMarkers: true,
+        polylineOptions: { strokeColor: '#00f5ff', strokeWeight: 3, strokeOpacity: .7 },
+      });
+      dirSvc.route({
+        origin: { lat: 40.8128, lng: -74.0743 },
+        destination: { lat: g.lat, lng: g.lng },
+        travelMode: google.maps.TravelMode.WALKING,
+      }, (result, status) => {
+        if (status === 'OK') dirRnd.setDirections(result);
+      });
+    }
+  });
+
+  if (heatLayer) heatLayer.setMap(null);
+  heatLayer = new google.maps.visualization.HeatmapLayer({
+    data: heatPts, map: nexusMap, radius: 55, opacity: .55,
+    gradient: ['transparent', 'rgba(0,245,255,.4)', 'rgba(123,47,247,.7)', 'rgba(255,45,120,.9)'],
+  });
+
+  // Geofence simulation: alert if user "enters" a high-density zone
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(pos => {
+      const userLat = pos.coords.latitude;
+      const userLng = pos.coords.longitude;
+      data.gates.forEach(g => {
+        const dist = google.maps.geometry.spherical.computeDistanceBetween(
+          new google.maps.LatLng(userLat, userLng),
+          new google.maps.LatLng(g.lat, g.lng)
+        );
+        if (dist < 200 && g.wait > 20) {
+          console.info(`NEXUS Geofence: High-density zone detected near ${g.id} (${Math.round(dist)}m away)`);
+        }
+      });
+    }, () => {});
+  }
+}
+
+// ─── Wait colour helpers ─────────────────────────────────────────────────────
+function wc(w)  { return w <= 10 ? 'wait-low' : w <= 22 ? 'wait-mid' : 'wait-high'; }
+function wbg(w) { return w <= 10 ? '#4ade80' : w <= 22 ? '#fbbf24' : '#f87171'; }
+function wdot(w){ return w <= 10 ? '🟢' : w <= 22 ? '🟡' : '🔴'; }
+
+// ─── Render gates ────────────────────────────────────────────────────────────
+function renderGates(gates) {
+  return gates.map(g => {
+    const pct = Math.min(100, (g.wait / 50) * 100);
+    return `
+      <div role="listitem" class="flex items-center gap-3 ${g.is_best ? 'gate-row-best' : 'opacity-65'}">
+        <div class="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center
+          ${g.is_best ? 'bg-cyan-400/15 border border-cyan-400/40' : 'bg-white/5 border border-white/10'}"
+          aria-hidden="true">
+          <i data-lucide="door-open"
+             style="width:15px;height:15px;color:${g.is_best ? 'var(--cyan)' : 'rgba(255,255,255,.4)'}"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex justify-between items-center mb-1.5">
+            <span class="text-sm font-semibold text-white/90 truncate">
+              ${g.id}
+              ${g.is_best ? '<span class="text-[9px] ml-1.5 text-cyan-400 border border-cyan-400/30 px-1.5 py-0.5 rounded font-bold">OPTIMAL</span>' : ''}
+              ${g.type === 'VIP' ? '<span class="text-[8px] ml-1 text-amber-400 border border-amber-400/30 px-1.5 py-0.5 rounded font-bold">VIP</span>' : ''}
+            </span>
+            <span class="font-bold text-sm flex-shrink-0 ml-2 ${wc(g.wait)}"
+                  aria-label="${g.wait} minute wait">${g.wait}m</span>
+          </div>
+          <div class="bar-track" role="progressbar"
+               aria-valuenow="${g.wait}" aria-valuemin="0" aria-valuemax="50"
+               aria-label="${g.id} queue length">
+            <div class="bar-fill" style="width:${pct}%;background:${wbg(g.wait)}"></div>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ─── Render small rows ────────────────────────────────────────────────────────
+function renderSmall(icon, name, wait) {
+  return `
+    <div class="flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2 min-w-0">
+        <i data-lucide="${icon}" style="width:12px;height:12px;color:rgba(255,255,255,.3);flex-shrink:0"
+           aria-hidden="true"></i>
+        <span class="text-[11px] text-white/60 truncate">${name}</span>
+      </div>
+      <div class="flex items-center gap-1 flex-shrink-0">
+        <span aria-hidden="true">${wdot(wait)}</span>
+        <span class="text-xs font-bold ${wc(wait)}" aria-label="${wait} minute wait">${wait}m</span>
+      </div>
+    </div>`;
+}
+
+// ─── Render crowd score ───────────────────────────────────────────────────────
+function renderScore(score) {
+  const circ  = 239;
+  const offset = circ - (score / 100) * circ;
+  setTimeout(() => {
+    document.getElementById('score-arc').style.strokeDashoffset = offset;
+  }, 120);
+  document.getElementById('score-val').textContent = score;
+
+  const lbl = document.getElementById('score-label');
+  const sub = document.getElementById('score-sub');
+  if (score >= 70) {
+    lbl.className = "font-['Orbitron'] font-bold text-lg grad-cyan";
+    lbl.textContent = 'Optimal Flow';
+    sub.textContent = 'Low congestion — ideal time to move.';
+  } else if (score >= 40) {
+    lbl.className = "font-['Orbitron'] font-bold text-lg grad-amber";
+    lbl.textContent = 'Moderate Density';
+    sub.textContent = 'Bottlenecks forming. Follow NEXUS routing.';
+  } else {
+    lbl.className = "font-['Orbitron'] font-bold text-lg grad-rose";
+    lbl.textContent = 'High Congestion';
+    sub.textContent = 'Peak crowding. Use alternate routes now.';
+  }
+}
+
+// ─── Main data fetch ─────────────────────────────────────────────────────────
+async function loadData(force) {
+  const btn = document.getElementById('sync-btn');
+  btn.classList.add('loading');
+  btn.innerHTML = '<i data-lucide="loader-2" style="width:14px;height:14px;" class="spin"></i> SYNCING…';
+  refreshIcons();
+
+  try {
+    const res  = await fetch(`/api/recommend?vip=${vipEnabled}&refresh=${force}&t=${Date.now()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    // Gates
+    document.getElementById('gates-list').innerHTML = renderGates(data.gates);
+
+    // Restrooms
+    document.getElementById('restrooms-list').innerHTML =
+      data.restrooms.map(r => renderSmall('toilet', r.name, r.wait)).join('');
+
+    // Food
+    document.getElementById('food-list').innerHTML =
+      data.food.map(f => renderSmall('utensils', f.name, f.wait)).join('');
+
+    // ProTip
+    const p = data.protip;
+    document.getElementById('tip-content').innerHTML = `
+      <p class="text-white/90 font-semibold text-sm leading-snug">${p.headline}</p>
+      <p class="text-white/40 text-xs leading-relaxed mt-1">${p.detail}</p>
+      <div class="mt-2.5 inline-flex items-center gap-1.5 text-cyan-400 text-[10px] font-bold uppercase tracking-widest">
+        <i data-lucide="zap" style="width:11px;height:11px;" aria-hidden="true"></i>${p.action}
+      </div>`;
+
+    // Score
+    renderScore(data.crowd_score);
+
+    // Timestamp
+    document.getElementById('last-sync').textContent =
+      `Last sync · ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})} · Telemetry #${data.telemetry_id}`;
+
+    refreshIcons();
+  } catch (err) {
+    document.getElementById('tip-content').innerHTML =
+      '<p class="text-rose-400 text-sm">Intelligence offline. Reconnecting…</p>';
+    console.error('NEXUS DATA ERROR', err);
+  } finally {
+    btn.classList.remove('loading');
+    btn.innerHTML = '<i data-lucide="refresh-cw" style="width:14px;height:14px;"></i> FORCE TELEMETRY SYNC';
+    refreshIcons();
+  }
+}
+
+function syncTelemetry(force) { loadData(force); }
+
+// ─── Boot ────────────────────────────────────────────────────────────────────
+refreshIcons();
+loadData(false);
+</script>
+</body>
+</html>
+
+==> tests/__init__.py <==
+"""NEXUS test suite."""
+
+==> tests/__pycache__ <==
+
+==> tests/test_nexus.py <==
+"""
+NEXUS · tests/test_nexus.py
+===========================
+pytest test suite covering:
+  - Core recommendation engine logic
+  - API endpoint responses and edge cases
+  - Telemetry state consistency
+  - Input validation and sanitisation
+  - Security headers
+  - VIP mode gating
+  - Crowd score calculation
+
+Run with:  pytest tests/ -v
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import os
+
+# Allow imports from project root
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import pytest
+
+# ── Fixtures ─────────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def flask_app():
+    """Create a test-configured Flask application."""
+    os.environ.setdefault("MAPS_API_KEY", "TEST_KEY_NOT_REAL")
+    from app import create_app
+    application = create_app()
+    application.config["TESTING"] = True
+    return application
+
+
+@pytest.fixture
+def client(flask_app):
+    """Provide a Flask test client."""
+    with flask_app.test_client() as c:
+        yield c
+
+
+@pytest.fixture(autouse=True)
+def reset_telemetry():
+    """Reset arena state between tests to prevent state leakage."""
+    from utils.telemetry import sync_arena_telemetry
+    sync_arena_telemetry()
+    yield
+    sync_arena_telemetry()
+
+
+# ── Health Endpoint ───────────────────────────────────────────────────────────
+
+class TestHealthEndpoint:
+    def test_health_returns_200(self, client):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+
+    def test_health_returns_ok_status(self, client):
+        data = resp = client.get("/api/health").get_json()
+        assert data["status"] == "ok"
+
+    def test_health_includes_telemetry_id(self, client):
+        data = client.get("/api/health").get_json()
+        assert "telemetry_id" in data
+        assert isinstance(data["telemetry_id"], int)
+
+
+# ── Dashboard Route ───────────────────────────────────────────────────────────
+
+class TestDashboardRoute:
+    def test_index_returns_200(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+
+    def test_index_returns_html(self, client):
+        resp = client.get("/")
+        assert b"NEXUS" in resp.data
+
+    def test_index_contains_vip_toggle(self, client):
+        resp = client.get("/")
+        assert b"vip-btn" in resp.data
+
+
+# ── Security Headers ──────────────────────────────────────────────────────────
+
+class TestSecurityHeaders:
+    def test_x_content_type_options(self, client):
+        resp = client.get("/")
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+
+    def test_x_frame_options(self, client):
+        resp = client.get("/")
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+
+    def test_hsts_header_present(self, client):
+        resp = client.get("/")
+        hsts = resp.headers.get("Strict-Transport-Security", "")
+        assert "max-age" in hsts
+
+    def test_csp_header_present(self, client):
+        resp = client.get("/")
+        assert "Content-Security-Policy" in resp.headers
+
+
+# ── Recommend API — Structure ─────────────────────────────────────────────────
+
+class TestRecommendStructure:
+    def test_returns_200(self, client):
+        resp = client.get("/api/recommend")
+        assert resp.status_code == 200
+
+    def test_has_gates_key(self, client):
+        data = client.get("/api/recommend").get_json()
+        assert "gates" in data
+
+    def test_has_restrooms_key(self, client):
+        data = client.get("/api/recommend").get_json()
+        assert "restrooms" in data
+
+    def test_has_food_key(self, client):
+        data = client.get("/api/recommend").get_json()
+        assert "food" in data
+
+    def test_has_protip_key(self, client):
+        data = client.get("/api/recommend").get_json()
+        assert "protip" in data
+
+    def test_has_crowd_score_key(self, client):
+        data = client.get("/api/recommend").get_json()
+        assert "crowd_score" in data
+
+    def test_has_telemetry_id_key(self, client):
+        data = client.get("/api/recommend").get_json()
+        assert "telemetry_id" in data
+
+    def test_protip_has_required_fields(self, client):
+        protip = client.get("/api/recommend").get_json()["protip"]
+        assert "headline" in protip
+        assert "detail" in protip
+        assert "action" in protip
+
+
+# ── Recommend API — Gate Data ─────────────────────────────────────────────────
+
+class TestGateData:
+    def test_three_gates_returned(self, client):
+        gates = client.get("/api/recommend").get_json()["gates"]
+        assert len(gates) == 3
+
+    def test_each_gate_has_id(self, client):
+        for g in client.get("/api/recommend").get_json()["gates"]:
+            assert "id" in g and isinstance(g["id"], str)
+
+    def test_each_gate_has_wait(self, client):
+        for g in client.get("/api/recommend").get_json()["gates"]:
+            assert "wait" in g and isinstance(g["wait"], int)
+
+    def test_each_gate_has_is_best(self, client):
+        for g in client.get("/api/recommend").get_json()["gates"]:
+            assert "is_best" in g and isinstance(g["is_best"], bool)
+
+    def test_exactly_one_gate_is_best(self, client):
+        gates = client.get("/api/recommend").get_json()["gates"]
+        best_count = sum(1 for g in gates if g["is_best"])
+        assert best_count == 1
+
+    def test_each_gate_has_efficiency_score(self, client):
+        for g in client.get("/api/recommend").get_json()["gates"]:
+            assert "efficiency_score" in g
+
+    def test_wait_times_within_valid_range(self, client):
+        for g in client.get("/api/recommend").get_json()["gates"]:
+            assert 0 <= g["wait"] <= 60, f"Wait {g['wait']} out of range for {g['id']}"
+
+    def test_crowd_score_within_valid_range(self, client):
+        score = client.get("/api/recommend").get_json()["crowd_score"]
+        assert 0 <= score <= 100
+
+
+# ── Recommendation Engine — Core Algorithm ────────────────────────────────────
+
+class TestRecommendationAlgorithm:
+    def test_best_gate_has_lowest_efficiency_score_ga(self, client):
+        """Without VIP, the OPTIMAL gate must have the lowest score among GA gates."""
+        data  = client.get("/api/recommend?vip=false").get_json()
+        gates = data["gates"]
+        best  = next(g for g in gates if g["is_best"])
+        ga_scores = [g["efficiency_score"] for g in gates if g["type"] != "VIP"]
+        assert best["efficiency_score"] == min(ga_scores)
+
+    def test_vip_off_never_selects_vip_gate_as_best(self, client):
+        """VIP gate must not be marked OPTIMAL when VIP mode is disabled."""
+        for _ in range(5):   # run several times to cover random variation
+            gates = client.get("/api/recommend?vip=false").get_json()["gates"]
+            best  = next(g for g in gates if g["is_best"])
+            assert best["type"] != "VIP", "VIP gate incorrectly selected when VIP mode OFF"
+
+    def test_vip_on_can_select_vip_gate(self, client):
+        """When VIP mode is enabled, a VIP gate may be selected (if it scores best)."""
+        data  = client.get("/api/recommend?vip=true").get_json()
+        gates = data["gates"]
+        best  = next(g for g in gates if g["is_best"])
+        all_scores = [g["efficiency_score"] for g in gates]
+        assert best["efficiency_score"] == min(all_scores)
+
+    def test_vip_gate_still_visible_when_mode_off(self, client):
+        """VIP gate should appear in the list even when VIP mode is OFF."""
+        gates = client.get("/api/recommend?vip=false").get_json()["gates"]
+        vip_gate_present = any(g["type"] == "VIP" for g in gates)
+        assert vip_gate_present
+
+
+# ── Force Refresh ─────────────────────────────────────────────────────────────
+
+class TestForceRefresh:
+    def test_telemetry_id_increments_on_refresh(self, client):
+        before = client.get("/api/recommend").get_json()["telemetry_id"]
+        after  = client.get("/api/recommend?refresh=true").get_json()["telemetry_id"]
+        assert after == before + 1
+
+    def test_no_refresh_does_not_increment_id(self, client):
+        before = client.get("/api/recommend").get_json()["telemetry_id"]
+        after  = client.get("/api/recommend?refresh=false").get_json()["telemetry_id"]
+        assert after == before
+
+
+# ── Input Validation ──────────────────────────────────────────────────────────
+
+class TestInputValidation:
+    def test_garbage_vip_param_defaults_to_false(self, client):
+        """Unrecognised vip param must not trigger VIP routing."""
+        data = client.get("/api/recommend?vip=<script>alert(1)</script>").get_json()
+        gates = data["gates"]
+        best  = next(g for g in gates if g["is_best"])
+        # Should behave like vip=false — no VIP gate selected
+        assert best["type"] != "VIP" or best["efficiency_score"] == min(g["efficiency_score"] for g in gates)
+
+    def test_numeric_vip_param_coerced(self, client):
+        resp = client.get("/api/recommend?vip=1")
+        assert resp.status_code == 200
+
+    def test_extra_unknown_params_ignored(self, client):
+        resp = client.get("/api/recommend?foo=bar&baz=qux")
+        assert resp.status_code == 200
+
+
+# ── Telemetry Engine Unit Tests ───────────────────────────────────────────────
+
+class TestTelemetryEngine:
+    def test_efficiency_score_greater_than_wait(self):
+        """Composite score must always exceed raw wait (walk penalty is positive)."""
+        from utils.telemetry import arena_state
+        for g in arena_state["gates"]:
+            assert g["efficiency_score"] >= g["wait"], (
+                f"Score {g['efficiency_score']} < wait {g['wait']} for {g['id']}"
+            )
+
+    def test_all_gates_have_coordinates(self):
+        from utils.telemetry import arena_state
+        for g in arena_state["gates"]:
+            assert "lat" in g and "lng" in g
+            assert isinstance(g["lat"], float) and isinstance(g["lng"], float)
+
+    def test_crowd_score_function(self):
+        from utils.telemetry import crowd_score
+        s = crowd_score()
+        assert 0 <= s <= 100
+
+    def test_build_recommendation_returns_dict(self):
+        from utils.telemetry import build_recommendation
+        result = build_recommendation(vip_enabled=False)
+        assert isinstance(result, dict)
+        assert all(k in result for k in ("headline", "detail", "action"))
+
+    def test_build_recommendation_vip_mode(self):
+        from utils.telemetry import build_recommendation
+        result = build_recommendation(vip_enabled=True)
+        assert isinstance(result["headline"], str)
+        assert len(result["headline"]) > 0

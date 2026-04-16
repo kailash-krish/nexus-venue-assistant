@@ -14,6 +14,7 @@ Algorithm: Weighted Multi-Variable Pathfinding
                   + (distance_m / WALKING_SPEED_M_PER_MIN)   # walk penalty
                   + crowd_velocity_penalty                    # density factor
                   + historical_decay_bonus                    # recency weight
+                  + predictive_arrival_load                   # NEW: inbound rush penalty
 """
 
 from __future__ import annotations
@@ -97,6 +98,22 @@ def _historical_decay_bonus(gate_id: str, current_wait: int) -> float:
     return round(trend * 0.5, 2)
 
 
+def _predictive_arrival_load(gate_id: str) -> float:
+    """
+    Calculates Future Weight based on simulated inbound transit/foot traffic.
+    This prevents routing fans to a gate that is currently empty but about to surge.
+    
+    Args:
+        gate_id: Unique gate identifier string.
+        
+    Returns:
+        Float penalty in minutes representing inbound congestion.
+    """
+    inbound_crowd = random.randint(10, 250) # Simulated crowd currently walking to this gate
+    future_penalty = inbound_crowd * 0.015  # 1.5 mins penalty per 100 inbound people
+    return round(future_penalty, 2)
+
+
 def _record_history(gate_id: str, wait: int) -> None:
     """Append a (timestamp, wait) sample to the rolling history buffer."""
     buf = arena_state["_history"].setdefault(gate_id, [])
@@ -140,12 +157,15 @@ def sync_arena_telemetry() -> None:
         walk_time = dist / WALKING_SPEED_M_PER_MIN
         vel_pen   = _crowd_velocity_penalty(wait, dist)
         decay_adj = _historical_decay_bonus(gid, wait)
+        future_wt = _predictive_arrival_load(gid)
 
-        raw_score = wait + walk_time + vel_pen + decay_adj
+        # The new CrowdFlow Predictive Algorithm implementation
+        raw_score = wait + walk_time + vel_pen + decay_adj + future_wt
         g["efficiency_score"] = round(max(wait, raw_score), 2)
         g["is_best"]          = False   # resolved in recommendation engine
         g["walk_min"]         = round(walk_time, 1)
         g["vel_penalty"]      = vel_pen
+        g["future_weight"]    = future_wt # Expose to UI
 
         _record_history(gid, wait)
 
@@ -230,11 +250,12 @@ def build_recommendation(vip_enabled: bool = False) -> Dict[str, str]:
                 headline = f"{vip_prefix}{best['id']} is your optimal route."
                 detail   = (
                     f"Composite score: {best['efficiency_score']} mins (wait + walk + density). "
+                    f"Predictive engine factored +{best['future_weight']}m inbound penalty. "
                     f"Saves ~{round(alt['efficiency_score'] - best['efficiency_score'], 1)} mins vs next best."
                 )
         else:
             headline = f"{vip_prefix}{best['id']} is optimal."
-            detail   = f"Composite score: {best['efficiency_score']} mins total transit time."
+            detail   = f"Composite score: {best['efficiency_score']} mins total transit time. Predictive flow factored."
 
         return {
             "headline": headline,

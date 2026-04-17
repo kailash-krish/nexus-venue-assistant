@@ -714,6 +714,21 @@
       border-color: rgba(2, 132, 199, 0.15);
       box-shadow: inset 0 0 20px rgba(2, 132, 199, 0.02);
     }
+
+    /* Mobile View Fix: Map Close Button */
+    body.light-mode #map-close-btn {
+      background: rgba(0, 0, 0, 0.05);
+      border-color: rgba(0, 0, 0, 0.1);
+    }
+
+    body.light-mode #map-close-btn:hover {
+      background: rgba(0, 0, 0, 0.1);
+    }
+
+    body.light-mode #map-close-btn [data-lucide="x"] {
+      color: #0f172a !important;
+      /* Forces the X to be a dark slate color */
+    }
   </style>
 </head>
 

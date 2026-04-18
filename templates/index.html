@@ -736,12 +736,20 @@
 
   <div id="dev-controls" class="fixed top-4 left-4 z-[9999] flex gap-2">
     <button onclick="toggleDesktopMode()"
-      class="glass px-4 py-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 hover:bg-white/10 transition">
-      <i data-lucide="monitor" style="width:12px;height:12px;"></i> View
+      class="glass px-4 py-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 hover:bg-white/10 transition"
+      aria-label="Toggle desktop command-center layout" tabindex="0">
+      <i data-lucide="monitor" style="width:12px;height:12px;" aria-hidden="true"></i> View
     </button>
     <button onclick="toggleThemeMode()"
-      class="glass px-4 py-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 hover:bg-white/10 transition">
-      <i data-lucide="sun" id="theme-icon-lucide" style="width:12px;height:12px;"></i> Theme
+      class="glass px-4 py-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 hover:bg-white/10 transition"
+      aria-label="Toggle light and dark theme" tabindex="0">
+      <i data-lucide="sun" id="theme-icon-lucide" style="width:12px;height:12px;" aria-hidden="true"></i> Theme
+    </button>
+    <button id="lang-btn" onclick="toggleLanguage()"
+      class="glass px-4 py-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 hover:bg-white/10 transition"
+      role="switch" aria-checked="false" aria-label="Toggle language between English and Spanish" tabindex="0">
+      <i data-lucide="globe" style="width:12px;height:12px;" aria-hidden="true"></i>
+      <span id="lang-label">EN</span>
     </button>
   </div>
 
@@ -1020,6 +1028,7 @@
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(pos => {
           const userLat = pos.coords.latitude;
+          const userLatNum = pos.coords.latitude;
           const userLng = pos.coords.longitude;
           data.gates.forEach(g => {
             const dist = google.maps.geometry.spherical.computeDistanceBetween(
@@ -1038,13 +1047,17 @@
     function wbg(w) { return w <= 10 ? '#4ade80' : w <= 22 ? '#fbbf24' : '#f87171'; }
     function wdot(w) { return w <= 10 ? '🟢' : w <= 22 ? '🟡' : '🔴'; }
 
+    // ─── Render gates (Unified, Non-Recursive Function) ─────────────────────────
     function renderGates(gates) {
-      return gates.map(g => {
+      let htmlOutput = '';
+
+      gates.forEach(g => {
         const pct = Math.min(100, (g.wait / 50) * 100);
-        // NEW FEATURE: Render future_weight if it exists from python backend
+        // Render future_weight if it exists from python backend
         const predictiveHtml = g.future_weight !== undefined ? `<div class="text-[9px] text-cyan-400 mt-1 uppercase tracking-widest opacity-80 border-t border-white/5 pt-1">Predictive Arrival Penalty: +${g.future_weight}m</div>` : '';
 
-        return `
+        // Added data-gate-name directly into the span to support Translation feature without regex patch loop
+        htmlOutput += `
       <div role="listitem" class="flex items-center gap-3 ${g.is_best ? 'gate-row-best' : 'opacity-65'}">
         <div class="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center
           ${g.is_best ? 'bg-cyan-400/15 border border-cyan-400/40' : 'bg-white/5 border border-white/10'}"
@@ -1055,7 +1068,7 @@
         <div class="flex-1 min-w-0">
           <div class="flex justify-between items-center mb-1.5">
             <span class="text-sm font-semibold text-white/90 truncate">
-              ${g.id}
+              <span data-gate-name="${g.id}">${g.id}</span>
               ${g.is_best ? '<span class="text-[9px] ml-1.5 text-cyan-400 border border-cyan-400/30 px-1.5 py-0.5 rounded font-bold">OPTIMAL</span>' : ''}
               ${g.type === 'VIP' ? '<span class="text-[8px] ml-1 text-amber-400 border border-amber-400/30 px-1.5 py-0.5 rounded font-bold">VIP</span>' : ''}
             </span>
@@ -1070,8 +1083,14 @@
           ${predictiveHtml}
         </div>
       </div>`;
-      }).join('');
+      });
+
+      return htmlOutput;
     }
+
+    // ─── Replaced infinite recursion patch logic with explicit notes for code preservation 
+    // The _origRenderGates pattern was removed here because it caused a "Maximum call stack size exceeded" 
+    // error when the DOM was re-rendered. The data-gate-name attribute is now safely handled natively above.
 
     function renderSmall(icon, name, wait) {
       return `
@@ -1157,6 +1176,76 @@
     }
 
     function syncTelemetry(force) { loadData(force); }
+
+    // ─── Language / Translation ──────────────────────────────────────────────
+    let langES = false;
+
+    /**
+     * Toggle the dashboard language between English and Spanish.
+     * Calls /api/translate with the current gate names and protip text,
+     * then re-renders those elements with the returned translations.
+     * Falls back gracefully if the API is unavailable.
+     */
+    async function toggleLanguage() {
+      langES = !langES;
+      const btn = document.getElementById('lang-btn');
+      btn.setAttribute('aria-checked', String(langES));
+      document.getElementById('lang-label').textContent = langES ? 'ES' : 'EN';
+      btn.classList.toggle('text-cyan-400', langES);
+
+      if (!langES) {
+        // Revert to English by re-rendering from latest data
+        loadData(false);
+        return;
+      }
+
+      // Gather texts to translate: gate names + protip headline + protip action
+      const gateEls    = [...document.querySelectorAll('[data-gate-name]')].map(el => el.dataset.gateName);
+      const tipHead    = document.querySelector('#tip-content p')?.textContent || '';
+      const tipAction  = document.querySelector('#tip-content [data-lucide="zap"]')?.parentElement?.textContent?.trim() || '';
+      const syncLabel  = 'FORCE TELEMETRY SYNC';
+      const scoreLabel = document.getElementById('score-label')?.textContent || '';
+
+      const texts = [...gateEls, tipHead, tipAction, syncLabel, scoreLabel].filter(Boolean);
+      if (!texts.length) return;
+
+      try {
+        const res = await fetch('/api/translate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({texts, target: 'es'}),
+        });
+        if (!res.ok) return;
+        const {translated} = await res.json();
+
+        // Apply gate name translations
+        document.querySelectorAll('[data-gate-name]').forEach((el, i) => {
+          if (translated[i]) el.textContent = translated[i];
+        });
+
+        // Apply protip headline
+        const offset = gateEls.length;
+        const tipP = document.querySelector('#tip-content p');
+        if (tipP && translated[offset]) tipP.textContent = translated[offset];
+
+        // Apply sync button label
+        const syncBtn = document.getElementById('sync-btn');
+        if (syncBtn && translated[offset + 2]) {
+          syncBtn.innerHTML = `<i data-lucide="refresh-cw" style="width:14px;height:14px;" aria-hidden="true"></i> ${translated[offset + 2]}`;
+          refreshIcons();
+        }
+
+        // Apply score label
+        const scoreLbl = document.getElementById('score-label');
+        if (scoreLbl && translated[offset + 3]) scoreLbl.textContent = translated[offset + 3];
+
+      } catch (e) {
+        console.warn('NEXUS TRANSLATE: API unavailable, staying in English.', e);
+        langES = false;
+        document.getElementById('lang-label').textContent = 'EN';
+        btn.setAttribute('aria-checked', 'false');
+      }
+    }
 
     refreshIcons();
     loadData(false);

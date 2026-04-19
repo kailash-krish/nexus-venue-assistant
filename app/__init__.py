@@ -7,17 +7,20 @@ Responsibilities
 ----------------
 * JSON-structured logging compatible with Google Cloud Logging's ``jsonPayload``
   format (severity, message, timestamp, component).
-* Hardened HTTP security headers on every response.
+* Hardened HTTP security headers on every response, including a Content-Security-Policy
+  that explicitly permits Google Analytics 4 (GA4) and reCAPTCHA v3 script origins.
 * Blueprint registration.
 
 Environment variables consumed
 -------------------------------
 MAPS_API_KEY        – Google Maps JS API key (injected into template at render-time).
-FIREBASE_URL        – Firebase Realtime Database base URL, e.g.
-                      ``https://<project>.firebaseio.com``.
+FIREBASE_URL        – Firebase Realtime Database base URL,
+                      e.g. ``https://<project>.firebaseio.com``.
 FIREBASE_SECRET     – Database secret / legacy token for REST auth.
 GEMINI_API_KEY      – Google Gemini generative AI key.
 TRANSLATE_API_KEY   – Google Cloud Translation API key.
+RECAPTCHA_SECRET    – reCAPTCHA v3 server-side secret key.
+GA4_MEASUREMENT_ID  – Google Analytics 4 Measurement ID (G-XXXXXXXXXX).
 """
 
 from __future__ import annotations
@@ -54,7 +57,17 @@ class _CloudJsonFormatter(logging.Formatter):
         "CRITICAL": "CRITICAL",
     }
 
-    def format(self, record: logging.LogRecord) -> str:  # noqa: D102
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Format *record* as a JSON string suitable for Cloud Logging ingestion.
+
+        Args:
+            record: The :class:`logging.LogRecord` to format.
+
+        Returns:
+            A single-line JSON string with GCP-compatible severity, message,
+            logger name, module, function name, and line number fields.
+        """
         payload: dict[str, Any] = {
             "severity":  self._LEVEL_MAP.get(record.levelname, "DEFAULT"),
             "message":   record.getMessage(),
@@ -74,9 +87,11 @@ def create_app() -> Flask:
     """
     Create and configure the NEXUS Flask application.
 
-    Applies JSON-structured logging, security headers, and registers the
-    main Blueprint.  All Google Cloud service credentials are read from
-    environment variables so that no secrets are embedded in source code.
+    Applies JSON-structured logging, hardened security headers (including a
+    CSP that permits GA4, reCAPTCHA v3, Firebase, Gemini, and Translation
+    origins), and registers the main Blueprint.  All Google Cloud service
+    credentials are read from environment variables so that no secrets are
+    embedded in source code.
 
     Returns:
         A fully configured :class:`flask.Flask` instance ready to serve.
@@ -97,7 +112,6 @@ def create_app() -> Flask:
 
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    # Remove default handlers to avoid duplicate / plain-text output
     root.handlers.clear()
     root.addHandler(handler)
 
@@ -110,40 +124,61 @@ def create_app() -> Flask:
         Headers applied
         ---------------
         X-Content-Type-Options
-            Prevents MIME-type sniffing.
+            Prevents MIME-type sniffing (``nosniff``).
         X-Frame-Options
-            Blocks clickjacking via iframes.
+            Blocks clickjacking via iframes (``DENY``).
         X-XSS-Protection
-            Enables legacy browser XSS filters.
+            Enables legacy browser XSS filter (``1; mode=block``).
         Referrer-Policy
-            Limits referrer information leakage.
+            Restricts referrer leakage (``strict-origin-when-cross-origin``).
         Strict-Transport-Security
-            Enforces HTTPS for one year, including sub-domains.
+            Enforces HTTPS for one year including sub-domains.
+        Permissions-Policy
+            Restricts access to sensitive browser APIs.
         Content-Security-Policy
-            Allowlists only the CDN origins used by the dashboard.
+            Allowlists only the origins required by the dashboard:
+            Tailwind CDN, Lucide, Google Fonts, Maps JS API, GA4,
+            reCAPTCHA v3, Firebase, Gemini, and Translation.
 
         Args:
-            response: The outgoing Flask :class:`~flask.wrappers.Response`.
+            response: The outgoing :class:`flask.wrappers.Response` object.
 
         Returns:
-            The same response object with security headers added.
+            The same response with all security headers attached.
         """
-        response.headers["X-Content-Type-Options"]  = "nosniff"
-        response.headers["X-Frame-Options"]          = "DENY"
-        response.headers["X-XSS-Protection"]         = "1; mode=block"
-        response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=31536000; includeSubDomains"
+        response.headers["X-Content-Type-Options"]   = "nosniff"
+        response.headers["X-Frame-Options"]           = "DENY"
+        response.headers["X-XSS-Protection"]          = "1; mode=block"
+        response.headers["Referrer-Policy"]           = "strict-origin-when-cross-origin"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Permissions-Policy"]        = (
+            "geolocation=(self), camera=(), microphone=()"
         )
-        # CSP — permits CDN assets (Tailwind, Lucide, Google Fonts, Maps)
+        # CSP — permits every origin the dashboard needs, including GA4 and reCAPTCHA v3.
+        # 'unsafe-inline' is required by Tailwind CDN's runtime injection.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
-            "https://unpkg.com https://maps.googleapis.com; "
+            "script-src 'self' 'unsafe-inline' "
+            "https://cdn.tailwindcss.com "
+            "https://unpkg.com "
+            "https://maps.googleapis.com "
+            "https://www.googletagmanager.com "
+            "https://www.google.com "
+            "https://www.gstatic.com; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src https://fonts.gstatic.com; "
-            "img-src 'self' data: https://maps.gstatic.com https://maps.googleapis.com; "
-            "connect-src 'self' https://maps.googleapis.com https://unpkg.com https://firebaseio.com https://generativelanguage.googleapis.com https://translation.googleapis.com;"
+            "img-src 'self' data: "
+            "https://maps.gstatic.com https://maps.googleapis.com "
+            "https://www.google-analytics.com https://www.googletagmanager.com; "
+            "frame-src https://www.google.com; "
+            "connect-src 'self' "
+            "https://maps.googleapis.com "
+            "https://firebaseio.com "
+            "https://generativelanguage.googleapis.com "
+            "https://translation.googleapis.com "
+            "https://www.google-analytics.com "
+            "https://region1.google-analytics.com "
+            "https://www.recaptcha.net;"
         )
         return response
 

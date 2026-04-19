@@ -23,6 +23,23 @@
     async defer></script>
   {% endif %}
 
+  {% if ga4_id %}
+  <!-- Google Analytics 4 -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga4_id }}"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    /** @param {...*} args - gtag arguments forwarded to dataLayer. */
+    function gtag(...args) { dataLayer.push(args); }
+    gtag('js', new Date());
+    gtag('config', '{{ ga4_id }}', { anonymize_ip: true });
+  </script>
+  {% endif %}
+
+  {% if recaptcha_site %}
+  <!-- reCAPTCHA v3 (invisible) -->
+  <script src="https://www.google.com/recaptcha/api.js?render={{ recaptcha_site }}" async defer></script>
+  {% endif %}
+
   <style>
     /* ── Design tokens ─────────────────────────────────────────────────────────── */
     :root {
@@ -729,20 +746,58 @@
       color: #0f172a !important;
       /* Forces the X to be a dark slate color */
     }
+
+    /* Boot Screen Animation */
+    @keyframes loading {
+      0% {
+        width: 0%;
+      }
+
+      50% {
+        width: 70%;
+      }
+
+      100% {
+        width: 100%;
+      }
+    }
+
+    .typing-cursor::after {
+      content: '█';
+      animation: blink 1s step-start infinite;
+      color: var(--cyan);
+      margin-left: 4px;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
   </style>
 </head>
 
 <body>
 
+  <div id="boot-screen"
+    class="fixed inset-0 z-[10000] bg-[#04050f] flex flex-col items-center justify-center transition-opacity duration-700">
+    <div class="text-cyan-400 font-['Orbitron'] font-black text-6xl tracking-tight mb-2 animate-pulse">NEXUS</div>
+    <div class="text-[10px] text-white/50 uppercase tracking-[0.3em] mb-8">Booting OS v6.0...</div>
+    <div class="w-48 h-1 bg-white/10 rounded-full overflow-hidden">
+      <div class="h-full bg-gradient-to-r from-cyan-400 to-violet-500 w-0 animate-[loading_1.5s_ease-in-out_forwards]">
+      </div>
+    </div>
+  </div>
+
   <div id="dev-controls" class="fixed top-4 left-4 z-[9999] flex gap-2">
-    <button onclick="toggleDesktopMode()"
+    <button id="view-btn" onclick="toggleDesktopMode()"
       class="glass px-4 py-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 hover:bg-white/10 transition"
-      aria-label="Toggle desktop command-center layout" tabindex="0">
+      aria-label="Toggle desktop command-center layout" aria-pressed="false" tabindex="0">
       <i data-lucide="monitor" style="width:12px;height:12px;" aria-hidden="true"></i> View
     </button>
-    <button onclick="toggleThemeMode()"
+    <button id="theme-btn" onclick="toggleThemeMode()"
       class="glass px-4 py-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 hover:bg-white/10 transition"
-      aria-label="Toggle light and dark theme" tabindex="0">
+      aria-label="Toggle light and dark theme" aria-pressed="false" tabindex="0">
       <i data-lucide="sun" id="theme-icon-lucide" style="width:12px;height:12px;" aria-hidden="true"></i> Theme
     </button>
     <button id="lang-btn" onclick="toggleLanguage()"
@@ -874,50 +929,105 @@
 
   </main>
 
+
   <script>
+    window.addEventListener('load', () => {
+      setTimeout(() => {
+        const boot = document.getElementById('boot-screen');
+        if (boot) {
+          boot.style.opacity = '0';
+          setTimeout(() => boot.remove(), 700);
+        }
+      }, 1600);
+    });
     'use strict';
 
     // ─── State ──────────────────────────────────────────────────────────────────
+    /** @type {boolean} Whether VIP gate routing is active. */
     let vipEnabled = false;
+    /** @type {google.maps.Map|null} Active Google Maps instance. */
     let nexusMap = null;
+    /** @type {google.maps.visualization.HeatmapLayer|null} Active heatmap layer. */
     let heatLayer = null;
+    /** @type {Array} Active map markers. */
     let mapMarkers = [];
-    let isDesktop = false; // NEW FEATURE
-    let isLight = false; // NEW FEATURE
+    /** @type {boolean} Whether desktop command-center layout is active. */
+    let isDesktop = false;
+    /** @type {boolean} Whether light (Aero-Glass) theme is active. */
+    let isLight = false;
+    /** @type {string} reCAPTCHA site key injected from server. */
+    const RECAPTCHA_SITE_KEY = '{{ recaptcha_site }}';
+    /** @type {string} GA4 Measurement ID injected from server. */
+    const GA4_ID = '{{ ga4_id }}';
 
     // ─── Icons ──────────────────────────────────────────────────────────────────
+    /** Reinitialise Lucide icons after dynamic DOM updates. */
     function refreshIcons() {
       if (window.lucide) lucide.createIcons();
     }
 
+    /**
+     * Execute a reCAPTCHA v3 action and return the token.
+     * Falls back to empty string when reCAPTCHA is not loaded.
+     * @param {string} action - reCAPTCHA action name (e.g. "recommend").
+     * @returns {Promise<string>} Resolved token string or empty string.
+     */
+    async function getRecaptchaToken(action) {
+      if (!window.grecaptcha || !RECAPTCHA_SITE_KEY) return '';
+      try {
+        return await grecaptcha.execute(RECAPTCHA_SITE_KEY, { action });
+      } catch (e) {
+        return '';
+      }
+    }
+
+    /**
+     * Fire a GA4 event if gtag is available.
+     * @param {string} name - GA4 event name.
+     * @param {Object} [params] - Optional event parameters.
+     */
+    function trackEvent(name, params = {}) {
+      if (window.gtag && GA4_ID) gtag('event', name, params);
+    }
+
     // ─── VIP Toggle ─────────────────────────────────────────────────────────────
+    /** Toggle VIP gate routing mode and refresh telemetry. */
     function toggleVip() {
       vipEnabled = !vipEnabled;
       const btn = document.getElementById('vip-btn');
       btn.classList.toggle('active', vipEnabled);
       btn.setAttribute('aria-checked', String(vipEnabled));
+      trackEvent('toggle_vip', { enabled: vipEnabled });
       loadData(false);
     }
 
-    // ─── NEW FEATURES: Toggle Functions ──────────────────────────────────────────
+    // ─── Toggle Functions ────────────────────────────────────────────────────────
+    /** Toggle desktop command-center dual-pane layout. */
     function toggleDesktopMode() {
       isDesktop = !isDesktop;
       document.body.classList.toggle('desktop-mode', isDesktop);
+      const btn = document.getElementById('view-btn');
+      if (btn) btn.setAttribute('aria-pressed', String(isDesktop));
       if (isDesktop && nexusMap) {
         google.maps.event.trigger(nexusMap, 'resize');
         renderHeatmap();
       }
+      trackEvent('toggle_desktop_mode', { enabled: isDesktop });
     }
 
+    /** Toggle between Ultra-Night (dark) and Aero-Glass (light) themes. */
     function toggleThemeMode() {
       isLight = !isLight;
       document.body.classList.toggle('light-mode', isLight);
+      const btn = document.getElementById('theme-btn');
+      if (btn) btn.setAttribute('aria-pressed', String(isLight));
       document.getElementById('theme-icon-lucide').setAttribute('data-lucide', isLight ? 'moon' : 'sun');
       refreshIcons();
       if (nexusMap) {
         nexusMap.setOptions({ styles: isLight ? lightStyle : nightStyle });
-        renderHeatmap(); // Redraw heatmap and markers to update colors
+        renderHeatmap();
       }
+      trackEvent('toggle_theme', { theme: isLight ? 'light' : 'dark' });
     }
 
     // ─── Map Styles ──────────────────────────────────────────────────────────────
@@ -945,13 +1055,54 @@
       });
     }
 
+    /**
+     * Open or close the geospatial map overlay modal.
+     * When opening: traps keyboard focus inside the modal and listens for Escape.
+     * When closing: restores focus to the button that opened the modal.
+     * @param {boolean} show - True to open, false to close.
+     */
     function toggleMap(show) {
-      if (isDesktop) return; // Prevent map toggle logic when side-by-side
+      if (isDesktop) return;
       const overlay = document.getElementById('map-overlay');
       overlay.style.display = show ? 'block' : 'none';
-      if (show && nexusMap) {
-        google.maps.event.trigger(nexusMap, 'resize');
-        renderHeatmap();
+
+      if (show) {
+        if (nexusMap) {
+          google.maps.event.trigger(nexusMap, 'resize');
+          renderHeatmap();
+        }
+        // Focus the close button immediately for keyboard users
+        const closeBtn = document.getElementById('map-close-btn');
+        if (closeBtn) closeBtn.focus();
+
+        // Focus trap: cycle through focusable elements inside the overlay
+        overlay.addEventListener('keydown', _mapKeyHandler);
+      } else {
+        overlay.removeEventListener('keydown', _mapKeyHandler);
+        // Restore focus to the heatmap trigger button
+        const trigger = document.querySelector('button.btn-map');
+        if (trigger) trigger.focus();
+      }
+    }
+
+    /**
+     * Keyboard handler for the map overlay modal.
+     * Closes on Escape; traps Tab focus within the modal.
+     * @param {KeyboardEvent} e - The keyboard event.
+     */
+    function _mapKeyHandler(e) {
+      const overlay = document.getElementById('map-overlay');
+      if (e.key === 'Escape') { toggleMap(false); return; }
+      if (e.key !== 'Tab') return;
+      const focusable = /** @type {NodeListOf<HTMLElement>} */ (
+        overlay.querySelectorAll('button, [href], input, [tabindex]:not([tabindex="-1"])')
+      );
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
       }
     }
 
@@ -1132,6 +1283,11 @@
       }
     }
 
+    /**
+     * Fetch telemetry from the backend and update all dashboard panels.
+     * Attaches a reCAPTCHA v3 token to the request when available.
+     * @param {boolean} force - When true, forces a full Firebase re-sync.
+     */
     async function loadData(force) {
       const btn = document.getElementById('sync-btn');
       btn.classList.add('loading');
@@ -1139,7 +1295,9 @@
       refreshIcons();
 
       try {
-        const res = await fetch(`/api/recommend?vip=${vipEnabled}&refresh=${force}&t=${Date.now()}`);
+        const token = await getRecaptchaToken('recommend');
+        const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+        const res = await fetch(`/api/recommend?vip=${vipEnabled}&refresh=${force}&t=${Date.now()}${tokenParam}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -1150,12 +1308,33 @@
           data.food.map(f => renderSmall('utensils', f.name, f.wait)).join('');
 
         const p = data.protip;
-        document.getElementById('tip-content').innerHTML = `
-      <p class="text-white/90 font-semibold text-sm leading-snug">${p.headline}</p>
-      <p class="text-white/40 text-xs leading-relaxed mt-1">${p.detail}</p>
-      <div class="mt-2.5 inline-flex items-center gap-1.5 text-cyan-400 text-[10px] font-bold uppercase tracking-widest">
-        <i data-lucide="zap" style="width:11px;height:11px;" aria-hidden="true"></i>${p.action}
-      </div>`;
+        const tipContainer = document.getElementById('tip-content');
+        tipContainer.innerHTML = `
+          <p id="type-head" class="text-white/90 font-semibold text-sm leading-snug typing-cursor"></p>
+          <p id="type-detail" class="text-white/40 text-xs leading-relaxed mt-1 hidden"></p>
+          <div id="type-action" class="mt-2.5 items-center gap-1.5 text-cyan-400 text-[10px] font-bold uppercase tracking-widest hidden">
+            <i data-lucide="zap" style="width:11px;height:11px;" aria-hidden="true"></i>${p.action}
+          </div>`;
+
+        // Typing Effect Engine
+        let i = 0;
+        const headText = p.headline;
+        function typeWriter() {
+          if (i < headText.length) {
+            document.getElementById('type-head').innerHTML += headText.charAt(i);
+            i++;
+            setTimeout(typeWriter, 20); // Typing speed
+          } else {
+            document.getElementById('type-head').classList.remove('typing-cursor');
+            document.getElementById('type-detail').innerHTML = p.detail;
+            document.getElementById('type-detail').classList.remove('hidden');
+            document.getElementById('type-detail').classList.add('fade-in');
+            document.getElementById('type-action').style.display = 'inline-flex';
+            document.getElementById('type-action').classList.add('fade-in');
+            refreshIcons();
+          }
+        }
+        typeWriter();
 
         renderScore(data.crowd_score);
 
@@ -1163,7 +1342,8 @@
           `Last sync · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · Telemetry #${data.telemetry_id}`;
 
         refreshIcons();
-        if (isDesktop) { renderHeatmap(); } // Force redraw in desktop if data updates
+        if (isDesktop) { renderHeatmap(); }
+        trackEvent('telemetry_loaded', { crowd_score: data.crowd_score, force });
       } catch (err) {
         document.getElementById('tip-content').innerHTML =
           '<p class="text-rose-400 text-sm">Intelligence offline. Reconnecting…</p>';
@@ -1178,12 +1358,13 @@
     function syncTelemetry(force) { loadData(force); }
 
     // ─── Language / Translation ──────────────────────────────────────────────
+    /** @type {boolean} Whether Spanish locale is active. */
     let langES = false;
 
     /**
      * Toggle the dashboard language between English and Spanish.
      * Calls /api/translate with the current gate names and protip text,
-     * then re-renders those elements with the returned translations.
+     * attaches a reCAPTCHA v3 token, and re-renders translated elements.
      * Falls back gracefully if the API is unavailable.
      */
     async function toggleLanguage() {
@@ -1192,50 +1373,46 @@
       btn.setAttribute('aria-checked', String(langES));
       document.getElementById('lang-label').textContent = langES ? 'ES' : 'EN';
       btn.classList.toggle('text-cyan-400', langES);
+      trackEvent('toggle_language', { locale: langES ? 'es' : 'en' });
 
       if (!langES) {
-        // Revert to English by re-rendering from latest data
         loadData(false);
         return;
       }
 
-      // Gather texts to translate: gate names + protip headline + protip action
-      const gateEls    = [...document.querySelectorAll('[data-gate-name]')].map(el => el.dataset.gateName);
-      const tipHead    = document.querySelector('#tip-content p')?.textContent || '';
-      const tipAction  = document.querySelector('#tip-content [data-lucide="zap"]')?.parentElement?.textContent?.trim() || '';
-      const syncLabel  = 'FORCE TELEMETRY SYNC';
+      const gateEls = [...document.querySelectorAll('[data-gate-name]')].map(el => el.dataset.gateName);
+      const tipHead = document.querySelector('#tip-content p')?.textContent || '';
+      const tipAction = document.querySelector('#tip-content [data-lucide="zap"]')?.parentElement?.textContent?.trim() || '';
+      const syncLabel = 'FORCE TELEMETRY SYNC';
       const scoreLabel = document.getElementById('score-label')?.textContent || '';
 
       const texts = [...gateEls, tipHead, tipAction, syncLabel, scoreLabel].filter(Boolean);
       if (!texts.length) return;
 
       try {
+        const token = await getRecaptchaToken('translate');
         const res = await fetch('/api/translate', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({texts, target: 'es'}),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ texts, target: 'es', token }),
         });
         if (!res.ok) return;
-        const {translated} = await res.json();
+        const { translated } = await res.json();
 
-        // Apply gate name translations
         document.querySelectorAll('[data-gate-name]').forEach((el, i) => {
           if (translated[i]) el.textContent = translated[i];
         });
 
-        // Apply protip headline
         const offset = gateEls.length;
         const tipP = document.querySelector('#tip-content p');
         if (tipP && translated[offset]) tipP.textContent = translated[offset];
 
-        // Apply sync button label
         const syncBtn = document.getElementById('sync-btn');
         if (syncBtn && translated[offset + 2]) {
           syncBtn.innerHTML = `<i data-lucide="refresh-cw" style="width:14px;height:14px;" aria-hidden="true"></i> ${translated[offset + 2]}`;
           refreshIcons();
         }
 
-        // Apply score label
         const scoreLbl = document.getElementById('score-label');
         if (scoreLbl && translated[offset + 3]) scoreLbl.textContent = translated[offset + 3];
 
@@ -1247,6 +1424,8 @@
       }
     }
 
+    // ─── Boot ────────────────────────────────────────────────────────────────────
+    trackEvent('page_view', { page_title: 'NEXUS Dashboard' });
     refreshIcons();
     loadData(false);
   </script>
